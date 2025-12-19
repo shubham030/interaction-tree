@@ -290,6 +290,19 @@ impl App {
                 message: format!("[{}] {}", event.source, summarize_payload(&event.payload)),
             };
             self.push_interaction_log(entry);
+            
+            // If interaction came from MCP (Amp), also show in Agent chat
+            if let Some(client_type) = event.payload.get("clientType").and_then(|c| c.as_str()) {
+                if client_type == "mcp" {
+                    let node_id = event.payload.get("nodeId").and_then(|n| n.as_str()).unwrap_or("unknown");
+                    let interaction = event.payload.get("interaction").and_then(|i| i.as_str()).unwrap_or("unknown");
+                    let action_msg = format!("⚡ {} on {}", interaction, node_id);
+                    let mut msg = crate::chat::ChatMessage::user(&action_msg);
+                    msg.client_id = Some("mcp".to_string());
+                    self.session.chat_messages.push(msg);
+                    self.session.chat_scroll = 0;
+                }
+            }
         }
     }
 
@@ -624,6 +637,19 @@ impl App {
                 self.session.pending_response = false;
                 self.session.last_agent_error = Some(message.clone());
                 self.push_toast(Toast::error(&message));
+            }
+            AgentEventKind::UserMessage { text, client_id } => {
+                // User message from another client (e.g., MCP/Amp)
+                // Only add if it's not from us (TUI)
+                if client_id != "tui" {
+                    let mut msg = crate::chat::ChatMessage::user(&text);
+                    msg.client_id = Some(client_id);
+                    self.session.chat_messages.push(msg);
+                    self.session.chat_scroll = 0; // Auto-scroll to bottom
+                    // Start streaming state for the response
+                    self.session.pending_response = true;
+                    self.session.chat_streaming = Some(crate::chat::StreamingState::default());
+                }
             }
         }
     }

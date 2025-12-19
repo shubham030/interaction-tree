@@ -168,6 +168,30 @@ const TOOLS = [
         description: 'Check if the daemon is healthy and responding',
         inputSchema: { type: 'object', properties: {} },
     },
+    // Context collection
+    {
+        name: 'get_context',
+        description: 'Get complete app context for debugging/issue reproduction. Returns tree, recent logs, runtime errors, and app status in one call.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                maxLogs: { type: 'number', description: 'Maximum log lines to include (default: 50)' },
+                summaryTree: { type: 'boolean', description: 'Only include user widgets in tree (default: true)' },
+            },
+        },
+    },
+    // Agent communication
+    {
+        name: 'send_agent_message',
+        description: 'Send a message/intent to the Flutter agent. The agent will process it and the conversation will be visible in the TUI. Use this for natural language commands like "tap the login button" or "fill in the email field with test@example.com".',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                message: { type: 'string', description: 'The message or intent to send to the agent' },
+            },
+            required: ['message'],
+        },
+    },
 ];
 export class McpProxy {
     server;
@@ -184,6 +208,14 @@ export class McpProxy {
         this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const { name, arguments: args } = request.params;
             try {
+                // Special handling for send_agent_message -> maps to agent_message
+                if (name === 'send_agent_message') {
+                    const { message } = args;
+                    const result = await this.daemonClient.sendCommand('agent_message', { intent: message });
+                    return {
+                        content: [{ type: 'text', text: JSON.stringify(result ?? { success: true }, null, 2) }],
+                    };
+                }
                 const result = await this.daemonClient.sendCommand(name, args);
                 return {
                     content: [{ type: 'text', text: JSON.stringify(result ?? { success: true }, null, 2) }],

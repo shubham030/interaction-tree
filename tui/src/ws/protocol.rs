@@ -131,6 +131,12 @@ pub enum AgentEventKind {
     MessageComplete,  // Streaming finished for current message (immediate feedback)
     TaskComplete { summary: String },  // Full task/turn complete
     Error { message: String },
+    /// User message from another client (e.g., MCP/Amp)
+    UserMessage {
+        text: String,
+        #[serde(rename = "clientId")]
+        client_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

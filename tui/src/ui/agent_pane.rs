@@ -154,7 +154,12 @@ fn render_message(msg: &ChatMessage, show_header: bool) -> Vec<Line<'static>> {
     
     // Role header - only shown for first message in a sequence from same role
     if show_header {
+        // Check if this is a message from another client (e.g., MCP/Amp)
+        let is_from_amp = msg.role == ChatRole::User 
+            && msg.client_id.as_ref().map_or(false, |c| c != "tui");
+        
         let (role_label, role_color) = match msg.role {
+            ChatRole::User if is_from_amp => ("Amp", Color::Cyan),
             ChatRole::User => ("You", Color::Blue),
             ChatRole::Assistant => ("Claude", Color::Green),
         };

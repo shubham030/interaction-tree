@@ -11,6 +11,8 @@ pub struct ChatMessage {
     pub role: ChatRole,
     pub content: ChatContent,
     pub timestamp: DateTime<Utc>,
+    /// Client that sent this message (e.g., "tui", "mcp")
+    pub client_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +56,7 @@ impl ChatMessage {
             role: ChatRole::User,
             content: ChatContent::Text(content.into()),
             timestamp: Utc::now(),
+            client_id: Some("tui".to_string()),
         }
     }
 
@@ -63,6 +66,7 @@ impl ChatMessage {
             role: ChatRole::Assistant,
             content: ChatContent::Text(content.into()),
             timestamp: Utc::now(),
+            client_id: None,
         }
     }
 
@@ -72,6 +76,7 @@ impl ChatMessage {
             role: ChatRole::Assistant,
             content: ChatContent::ToolCall(call),
             timestamp: Utc::now(),
+            client_id: None,
         }
     }
 }
@@ -135,6 +140,7 @@ impl TryFrom<DaemonChatMessage> for ChatMessage {
             role,
             content,
             timestamp,
+            client_id: None,
         })
     }
 }

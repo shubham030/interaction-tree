@@ -304,6 +304,11 @@ export class DaemonServer {
           }
           const clearErrors = (data as { clearRuntimeErrors?: boolean })?.clearRuntimeErrors ?? false;
           const result = await service.hotReload(clearErrors);
+          
+          // Broadcast to all clients
+          const clientType = clientEntry?.client.type ?? 'unknown';
+          this.broadcastEvent('flutter', 'flutter.hot_reload', { result, clientType }, sessionId);
+          
           sendResponse({ success: result.success, data: result, error: result.error });
           break;
         }
@@ -322,6 +327,11 @@ export class DaemonServer {
           }
           const clearErrors = (data as { clearRuntimeErrors?: boolean })?.clearRuntimeErrors ?? true;
           const result = await service.hotRestart(clearErrors);
+          
+          // Broadcast to all clients
+          const clientType = clientEntry?.client.type ?? 'unknown';
+          this.broadcastEvent('flutter', 'flutter.hot_restart', { result, clientType }, sessionId);
+          
           sendResponse({ success: result.success, data: result, error: result.error });
           break;
         }
@@ -385,6 +395,17 @@ export class DaemonServer {
           }
           try {
             const result = await service.execute(nodeId, interaction, args);
+            
+            // Broadcast interaction to all clients so TUI sees actions from MCP
+            const clientType = clientEntry?.client.type ?? 'unknown';
+            this.broadcastEvent('interaction', 'interaction.executed', {
+              nodeId,
+              interaction,
+              args,
+              result,
+              clientType,
+            }, sessionId);
+            
             sendResponse({ success: true, data: result });
           } catch (err) {
             sendResponse({
@@ -481,6 +502,69 @@ export class DaemonServer {
           break;
         }
 
+        case 'get_context': {
+          const clientEntry = this.clients.get(clientId);
+          const sessionId = clientEntry?.client.currentSessionId;
+          if (!sessionId) {
+            sendResponse({ success: false, error: NO_SESSION_ERROR });
+            return;
+          }
+          const service = this.sessionServices.get(sessionId);
+          const session = this.sessionManager.get(sessionId);
+          if (!session) {
+            sendResponse({ success: false, error: 'Session not found' });
+            return;
+          }
+
+          const options = data as { maxLogs?: number; summaryTree?: boolean } | undefined;
+          const maxLogs = options?.maxLogs ?? 50;
+          const summaryTree = options?.summaryTree ?? true;
+
+          try {
+            // Gather all context in parallel where possible
+            const context: {
+              timestamp: string;
+              sessionId: string;
+              sessionName: string;
+              appStatus: string;
+              vmConnected: boolean;
+              vmServiceUri?: string;
+              tree: unknown[] | null;
+              recentLogs: string[];
+              runtimeErrors: unknown[];
+            } = {
+              timestamp: new Date().toISOString(),
+              sessionId,
+              sessionName: session.name,
+              appStatus: session.appStatus,
+              vmConnected: service?.isVmConnected ?? false,
+              vmServiceUri: session.vmServiceUri ?? undefined,
+              tree: null,
+              recentLogs: service?.getLogs(maxLogs) ?? [],
+              runtimeErrors: [],
+            };
+
+            // Only fetch tree and errors if VM is connected
+            if (service?.isVmConnected) {
+              const [tree, errors] = await Promise.all([
+                service.getTree({ includeWidgetType: true, summaryOnly: summaryTree }).catch(() => null),
+                service.getRuntimeErrors().catch(() => []),
+              ]);
+              context.tree = tree;
+              context.runtimeErrors = errors;
+            }
+
+            log.ws.info({ sessionId, treeNodes: context.tree?.length ?? 0, logCount: context.recentLogs.length, errorCount: context.runtimeErrors.length }, 'get_context collected');
+            sendResponse({ success: true, data: context });
+          } catch (err) {
+            sendResponse({
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          break;
+        }
+
         case 'agent_message': {
           log.agent.debug({ clientId }, 'Received agent_message');
           const clientEntry = this.clients.get(clientId);
@@ -507,6 +591,23 @@ export class DaemonServer {
             content: { type: 'text', text: intent },
             timestamp: new Date().toISOString(),
           });
+
+          // Broadcast user message to ALL connected clients so TUI sees messages from MCP
+          const clientType = clientEntry?.client.type ?? 'unknown';
+          log.agent.info({ sessionId, clientType, clientCount: this.clients.size }, 'Broadcasting user_message to all clients');
+          
+          const userMessageEvent: AgentStreamEvent = {
+            type: 'agent_stream',
+            id,
+            sessionId,
+            event: { kind: 'user_message', text: intent, clientId: clientType },
+          };
+          for (const [cid, { ws: clientWs, client }] of this.clients.entries()) {
+            if (clientWs.readyState === WebSocket.OPEN) {
+              log.agent.debug({ targetClientId: cid.slice(0, 8), targetClientType: client.type }, 'Sending user_message event');
+              clientWs.send(JSON.stringify(userMessageEvent));
+            }
+          }
 
           const service = this.sessionServices.get(sessionId);
           log.agent.debug({ hasService: !!service, isVmConnected: service?.isVmConnected }, 'Session service status');
@@ -566,14 +667,18 @@ export class DaemonServer {
               }
             }
 
+            // Broadcast streaming events to ALL connected clients
             const streamEvent: AgentStreamEvent = {
               type: 'agent_stream',
               id,
               sessionId,
               event: partialEvent.event,
             };
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify(streamEvent));
+            const eventJson = JSON.stringify(streamEvent);
+            for (const { ws: clientWs } of this.clients.values()) {
+              if (clientWs.readyState === WebSocket.OPEN) {
+                clientWs.send(eventJson);
+              }
             }
           };
 

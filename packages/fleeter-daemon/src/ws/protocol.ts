@@ -54,6 +54,8 @@ export type CommandAction =
   // Logs & errors
   | 'get_logs'
   | 'get_errors'
+  // Context collection
+  | 'get_context'
   // Agent
   | 'agent_message'
   // Status
@@ -125,7 +127,8 @@ export type AgentEventType =
   | { kind: 'tool_call_end'; toolName: string; toolCallId: string; result?: string }
   | { kind: 'message_complete' }  // Streaming finished for current message (immediate UI feedback)
   | { kind: 'task_complete'; summary: string }  // Full task/turn complete (after SDK finishes)
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  | { kind: 'user_message'; text: string; clientId: string };  // User message from another client (e.g., MCP)
 
 export interface AgentStreamEvent {
   type: 'agent_stream';
