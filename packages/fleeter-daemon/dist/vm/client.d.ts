@@ -17,8 +17,6 @@ export interface InteractionEvent {
 }
 /** Events emitted by VMServiceClient */
 export interface VMServiceEvents {
-    /** Fired when tree may have changed (Frame, Navigation, Reload events) */
-    treeChanged: () => void;
     /** Fired on Flutter.Frame events (rate-limited) */
     frame: () => void;
     /** Fired on Flutter.Navigation events */

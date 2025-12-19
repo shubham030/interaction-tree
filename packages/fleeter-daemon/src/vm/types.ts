@@ -49,6 +49,7 @@ export interface InteractionResult {
   success: boolean;
   error?: string;
   duration_ms?: number;
+  tree?: InteractionTarget[];
 }
 
 export interface BatchStep {
@@ -80,6 +81,7 @@ export interface BatchResult {
   results: InteractionResult[];
   stoppedAtIndex?: number;
   error?: string;
+  tree?: InteractionTarget[];
 }
 
 export interface GetTreeOptions {

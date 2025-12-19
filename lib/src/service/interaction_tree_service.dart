@@ -86,6 +86,7 @@ class InteractionTreeService {
           final id = params['id'];
           final interaction = params['interaction'];
           final argsJson = params['args'];
+          final returnTree = params['returnTree'] != 'false'; // default true
 
           if (id == null || interaction == null) {
             return developer.ServiceExtensionResponse.error(
@@ -104,6 +105,14 @@ class InteractionTreeService {
             interaction: interaction,
             args: args,
           );
+
+          // Include updated tree by default after interaction settles
+          if (returnTree && result['success'] == true) {
+            result['tree'] = InteractionExecutor.getSettledTree(
+              includeBounds: true,
+              includeWidgetType: true,
+            );
+          }
 
           return developer.ServiceExtensionResponse.result(jsonEncode(result));
         } catch (e, st) {
@@ -152,6 +161,8 @@ class InteractionTreeService {
       (method, params) async {
         try {
           final stepsJson = params['steps'];
+          final returnTree = params['returnTree'] != 'false'; // default true
+
           if (stepsJson == null) {
             return developer.ServiceExtensionResponse.error(
               developer.ServiceExtensionResponse.invalidParams,
@@ -184,13 +195,21 @@ class InteractionTreeService {
             }
           }
 
-          return developer.ServiceExtensionResponse.result(
-            jsonEncode({
-              'success': success,
-              'results': results,
-              if (stoppedAtIndex != null) 'stoppedAtIndex': stoppedAtIndex,
-            }),
-          );
+          final response = <String, dynamic>{
+            'success': success,
+            'results': results,
+            if (stoppedAtIndex != null) 'stoppedAtIndex': stoppedAtIndex,
+          };
+
+          // Include final tree state after batch completes
+          if (returnTree) {
+            response['tree'] = InteractionExecutor.getSettledTree(
+              includeBounds: true,
+              includeWidgetType: true,
+            );
+          }
+
+          return developer.ServiceExtensionResponse.result(jsonEncode(response));
         } catch (e, st) {
           return developer.ServiceExtensionResponse.error(
             developer.ServiceExtensionResponse.extensionError,
@@ -219,6 +238,12 @@ class InteractionTreeService {
           capabilities: key.capabilities ?? inferCapabilities(element),
           actions: _getActionsForElement(element),
         );
+
+        // Only include visible targets (filters out offstage/hidden widgets)
+        if (!target.isVisible) {
+          element.visitChildren(visit);
+          return;
+        }
 
         final json = target.toJson(
           includeBounds: includeBounds,

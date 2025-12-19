@@ -135,6 +135,9 @@ impl App {
         
         // Set the new session
         self.selected_session = Some(new_session_id);
+        
+        // Always fetch tree when switching sessions (it may be stale or missing)
+        self.needs_tree_fetch = true;
     }
 
     // Completion methods - currently unused, hotkey-driven UI instead
@@ -192,6 +195,25 @@ impl App {
     pub fn set_tree(&mut self, tree: InteractionTree) {
         self.session.tree = Some(tree);
         self.session.tree_state = TreeState::default();
+        // Expand all nodes and select first one
+        self.tree_expand_all();
+        self.select_first_tree_node();
+    }
+    
+    /// Select the first node in the tree
+    fn select_first_tree_node(&mut self) {
+        if let Some(compact) = self.compact_tree() {
+            if let Some(first) = compact.tree.first() {
+                let id = match first {
+                    crate::tree_format::TreeEntry::Context { .. } => "ctx_0".to_string(),
+                    crate::tree_format::TreeEntry::Homogeneous { id, .. } => format!("{}_0", id),
+                    crate::tree_format::TreeEntry::Singleton { id, .. } => format!("{}_0", id),
+                    crate::tree_format::TreeEntry::Variants { id, .. } => format!("{}_0", id),
+                    crate::tree_format::TreeEntry::Heterogeneous { .. } => "het_0".to_string(),
+                };
+                self.session.tree_state.select(vec![id]);
+            }
+        }
     }
 
     pub fn compact_tree(&self) -> Option<CompactTree> {
@@ -392,7 +414,7 @@ impl App {
 
     pub fn handle_command_response(&mut self, resp: CommandResponse) {
         if resp.success {
-            // Check if this is a tree response
+            // Check if this is a tree response (from get_tree)
             if let Some(targets) = resp.data.get("targets").and_then(|t| t.as_array()) {
                 let nodes = Self::parse_tree_nodes(targets);
                 let tree = InteractionTree {
@@ -401,6 +423,17 @@ impl App {
                 };
                 self.set_tree(tree);
                 return;
+            }
+
+            // Check if response contains updated tree (from execute_interaction, batch)
+            if let Some(tree_data) = resp.data.get("tree").and_then(|t| t.as_array()) {
+                let nodes = Self::parse_tree_nodes(tree_data);
+                let tree = InteractionTree {
+                    nodes,
+                    last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                };
+                self.set_tree(tree);
+                // Don't return - continue processing other fields
             }
 
             // Check if this is a sessions list response
@@ -550,6 +583,8 @@ impl App {
                 self.session.conversation_id = None;
                 self.session.agent_question = None;
                 self.session.last_agent_error = None;
+                // Refresh tree after agent completes (it may have changed the UI)
+                self.needs_tree_fetch = true;
             }
             AgentStatus::NeedsContext => {
                 self.session.conversation_id = resp.sdk_session_id;
@@ -809,6 +844,85 @@ impl App {
 
     pub fn tree_selected(&self) -> Option<&String> {
         self.session.tree_state.selected().last()
+    }
+
+    /// Expand all tree nodes recursively
+    pub fn tree_expand_all(&mut self) {
+        if let Some(compact) = self.compact_tree() {
+            self.collect_and_open_all(&compact.tree, vec![]);
+        }
+    }
+
+    /// Recursively collect all tree identifiers and open them.
+    /// Identifiers match the format used in tree_pane.rs: ctx_N, id_N, het_N, var_N
+    fn collect_and_open_all(&mut self, entries: &[crate::tree_format::TreeEntry], path: Vec<String>) {
+        use crate::tree_format::TreeEntry;
+        for (sibling_index, entry) in entries.iter().enumerate() {
+            match entry {
+                TreeEntry::Context { children, .. } => {
+                    let id = format!("ctx_{}", sibling_index);
+                    let mut new_path = path.clone();
+                    new_path.push(id);
+                    self.session.tree_state.open(new_path.clone());
+                    self.collect_and_open_all(children, new_path);
+                }
+                TreeEntry::Homogeneous { id, children, .. } => {
+                    let tree_id = format!("{}_{}", id, sibling_index);
+                    let mut new_path = path.clone();
+                    new_path.push(tree_id);
+                    if !children.is_empty() {
+                        self.session.tree_state.open(new_path.clone());
+                        self.collect_and_open_all(children, new_path);
+                    }
+                }
+                TreeEntry::Heterogeneous { items } => {
+                    let id = format!("het_{}", sibling_index);
+                    let mut new_path = path.clone();
+                    new_path.push(id);
+                    self.session.tree_state.open(new_path.clone());
+                    self.collect_and_open_all(items, new_path);
+                }
+                TreeEntry::Variants { id, variants } => {
+                    let tree_id = format!("{}_{}", id, sibling_index);
+                    let mut new_path = path.clone();
+                    new_path.push(tree_id);
+                    self.session.tree_state.open(new_path.clone());
+                    for (var_index, variant) in variants.iter().enumerate() {
+                        let var_id = format!("var_{}", var_index);
+                        let mut var_path = new_path.clone();
+                        var_path.push(var_id);
+                        if !variant.children.is_empty() {
+                            self.session.tree_state.open(var_path.clone());
+                            self.collect_and_open_all(&variant.children, var_path);
+                        }
+                    }
+                }
+                TreeEntry::Singleton { id, children } => {
+                    let tree_id = format!("{}_{}", id, sibling_index);
+                    let mut new_path = path.clone();
+                    new_path.push(tree_id);
+                    if !children.is_empty() {
+                        self.session.tree_state.open(new_path.clone());
+                        self.collect_and_open_all(children, new_path);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Collapse all tree nodes
+    pub fn tree_collapse_all(&mut self) {
+        // Get the top-level ancestor of current selection before collapsing
+        let top_ancestor = self.session.tree_state.selected().first().cloned();
+        
+        self.session.tree_state.close_all();
+        
+        // Select the top-level ancestor, or first node if none
+        if let Some(ancestor) = top_ancestor {
+            self.session.tree_state.select(vec![ancestor]);
+        } else {
+            self.select_first_tree_node();
+        }
     }
 
     pub fn clear_events(&mut self) {
@@ -1326,5 +1440,75 @@ mod tests {
         assert_eq!(app.sessions.len(), 1);
         assert_eq!(app.sessions[0].id, "sess-new");
         assert_eq!(app.sessions[0].name, "new-app");
+    }
+
+    #[test]
+    fn test_tree_expand_collapse_all() {
+        use crate::types::InteractionTree;
+        
+        let mut app = App::new("ws://localhost:9000".to_string(), 10, test_project());
+        
+        // Create a tree with some nested nodes
+        let tree = InteractionTree {
+            nodes: vec![
+                TreeNode {
+                    id: "btn-1".to_string(),
+                    widget_type: Some("Button".to_string()),
+                    children: vec![],
+                    contexts: vec![ContextInfo {
+                        name: "counter-section".to_string(),
+                        description: Some("Counter controls".to_string()),
+                    }],
+                    capabilities: vec![],
+                    actions: vec![],
+                },
+                TreeNode {
+                    id: "btn-2".to_string(),
+                    widget_type: Some("Button".to_string()),
+                    children: vec![],
+                    contexts: vec![ContextInfo {
+                        name: "counter-section".to_string(),
+                        description: Some("Counter controls".to_string()),
+                    }],
+                    capabilities: vec![],
+                    actions: vec![],
+                },
+                TreeNode {
+                    id: "nav-btn".to_string(),
+                    widget_type: Some("Button".to_string()),
+                    children: vec![],
+                    contexts: vec![],
+                    capabilities: vec![],
+                    actions: vec![],
+                },
+            ],
+            last_updated: None,
+        };
+        
+        app.set_tree(tree);
+        
+        // After set_tree, first node (context) should be selected
+        assert_eq!(app.session.tree_state.selected(), vec!["ctx_0"]);
+        
+        // Context should be opened (expanded)
+        assert!(app.session.tree_state.opened().contains(&vec!["ctx_0".to_string()]));
+        
+        // Navigate into nested node (simulate selecting a child)
+        app.session.tree_state.select(vec!["ctx_0".to_string(), "btn-1_0".to_string()]);
+        
+        // Collapse all
+        app.tree_collapse_all();
+        
+        // Nothing should be opened after collapse
+        assert!(app.session.tree_state.opened().is_empty());
+        
+        // Should select the top-level ancestor (ctx_0), not first node
+        assert_eq!(app.session.tree_state.selected(), vec!["ctx_0"]);
+        
+        // Expand all again
+        app.tree_expand_all();
+        
+        // Context should be opened again
+        assert!(app.session.tree_state.opened().contains(&vec!["ctx_0".to_string()]));
     }
 }

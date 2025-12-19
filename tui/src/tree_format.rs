@@ -368,47 +368,67 @@ fn child_fingerprint(node: &TreeNode) -> String {
 
 /// Build a context-grouped tree from flat nodes.
 /// Nodes are grouped under their InteractionContext ancestors.
+/// Preserves original order by tracking first occurrence of each context path.
 fn build_context_tree(nodes: &[TreeNode]) -> Vec<TreeEntry> {
     if nodes.is_empty() {
         return Vec::new();
     }
 
-    // Collect all unique context paths
+    // Track context paths in order of first occurrence
     let mut context_map: HashMap<Vec<String>, (Vec<ContextInfo>, Vec<&TreeNode>)> = HashMap::new();
-    let mut no_context_nodes: Vec<&TreeNode> = Vec::new();
+    
+    // Track slots to preserve interleaving of no-context and context nodes
+    #[derive(Clone)]
+    enum TreeSlot {
+        NoContext(Vec<TreeNode>),
+        Context(Vec<String>),
+    }
+    let mut slots: Vec<TreeSlot> = Vec::new();
+    let mut current_no_context: Vec<TreeNode> = Vec::new();
 
     for node in nodes {
         if node.contexts.is_empty() {
-            no_context_nodes.push(node);
+            current_no_context.push(node.clone());
         } else {
+            // Flush any accumulated no-context nodes
+            if !current_no_context.is_empty() {
+                slots.push(TreeSlot::NoContext(std::mem::take(&mut current_no_context)));
+            }
+            
             let context_path: Vec<String> = node.contexts.iter().map(|c| c.name.clone()).collect();
+            
+            // Track order of first occurrence
+            if !context_map.contains_key(&context_path) {
+                slots.push(TreeSlot::Context(context_path.clone()));
+            }
+            
             let entry = context_map.entry(context_path).or_insert_with(|| (node.contexts.clone(), Vec::new()));
             entry.1.push(node);
         }
     }
+    
+    // Flush remaining no-context nodes
+    if !current_no_context.is_empty() {
+        slots.push(TreeSlot::NoContext(current_no_context));
+    }
 
     let mut result = Vec::new();
 
-    // First, add nodes without context
-    if !no_context_nodes.is_empty() {
-        let owned: Vec<TreeNode> = no_context_nodes.iter().map(|n| (*n).clone()).collect();
-        result.extend(compact_siblings(&owned));
-    }
-
-    // Then build nested context structure
-    // Sort context paths for consistent output
-    let mut context_paths: Vec<_> = context_map.keys().cloned().collect();
-    context_paths.sort();
-
-    // Build a nested tree from context paths
-    for context_path in context_paths {
-        let (contexts, nodes_in_context) = context_map.remove(&context_path).unwrap();
-        let owned_nodes: Vec<TreeNode> = nodes_in_context.iter().map(|n| (*n).clone()).collect();
-        let children = compact_siblings(&owned_nodes);
-
-        // Build nested context entries from innermost to outermost
-        let entry = build_nested_contexts(&contexts, children);
-        result.push(entry);
+    // Process slots in order to preserve interleaving
+    for slot in slots {
+        match slot {
+            TreeSlot::NoContext(nodes) => {
+                result.extend(compact_siblings(&nodes));
+            }
+            TreeSlot::Context(context_path) => {
+                if let Some((contexts, nodes_in_context)) = context_map.remove(&context_path) {
+                    let owned_nodes: Vec<TreeNode> = nodes_in_context.iter().map(|n| (*n).clone()).collect();
+                    let children = compact_siblings(&owned_nodes);
+                    let entry = build_nested_contexts(&contexts, children);
+                    result.push(entry);
+                }
+            }
+        }
     }
 
     result

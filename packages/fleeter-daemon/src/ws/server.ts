@@ -48,6 +48,18 @@ export class DaemonServer {
   registerSessionService(sessionId: string, service: SessionService): void {
     this.sessionServices.set(sessionId, service);
     log.ws.debug({ sessionId }, 'Registered session service');
+
+    // Listen for interaction events and broadcast them
+    service.on('interaction', (data: {
+      sessionId: string;
+      nodeId: string;
+      interaction: string;
+      args?: Record<string, unknown>;
+      success: boolean;
+      error?: string;
+    }) => {
+      this.broadcastEvent('interaction', 'interaction.executed', data, data.sessionId);
+    });
   }
 
   unregisterSessionService(sessionId: string): void {
@@ -169,6 +181,13 @@ export class DaemonServer {
           if (!sessionId) {
             sendResponse({ success: false, error: 'sessionId is required' });
             return;
+          }
+          // Stop the app and kill the process first
+          const service = this.sessionServices.get(sessionId);
+          if (service) {
+            await service.stopApp();
+          } else {
+            await this.flutterManager.stopApp(sessionId);
           }
           await this.sessionManager.destroy(sessionId);
           sendResponse({ success: true });

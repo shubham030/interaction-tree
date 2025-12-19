@@ -7,7 +7,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
 };
 
@@ -102,17 +102,38 @@ fn render_chat(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     
+    // Split for content and scrollbar
+    let chunks = Layout::horizontal([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    let content_area = chunks[0];
+    let scrollbar_area = chunks[1];
+    
     // Calculate scroll - use user offset from bottom (0 = bottom, higher = scrolled up)
     let content_height = all_lines.len() as u16;
-    let visible_height = inner.height;
+    let visible_height = content_area.height;
     let max_scroll = content_height.saturating_sub(visible_height);
     let user_offset = (app.session.chat_scroll as u16).min(max_scroll);
     let scroll = max_scroll.saturating_sub(user_offset);
     
-    let paragraph = Paragraph::new(all_lines)
+    let paragraph = Paragraph::new(all_lines.clone())
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
-    frame.render_widget(paragraph, inner);
+    frame.render_widget(paragraph, content_area);
+    
+    // Render scrollbar
+    if content_height > 0 {
+        let scroll_position = scroll as usize;
+        let mut scrollbar_state = ScrollbarState::new(content_height as usize)
+            .position(scroll_position);
+        
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"))
+            .track_symbol(Some("│"))
+            .thumb_symbol("█");
+        
+        frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+    }
 }
 
 fn render_composer(frame: &mut Frame, app: &App, area: Rect) {

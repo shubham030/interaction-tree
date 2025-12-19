@@ -50,18 +50,11 @@ export class SessionService extends EventEmitter {
     this.sessionManager = options.sessionManager;
     this.processManager = options.processManager;
     this.projectPath = options.projectPath;
-
-    if (this.vmClient) {
-      this.vmClient.on('treeChanged', () => this.invalidateTreeCache());
-      this.vmClient.on('interaction', () => this.invalidateTreeCache());
-    }
   }
 
   /** Set the VM client (called when VM connects after runApp) */
   setVmClient(vmClient: VMServiceClient): void {
     this.vmClient = vmClient;
-    this.vmClient.on('treeChanged', () => this.invalidateTreeCache());
-    this.vmClient.on('interaction', () => this.invalidateTreeCache());
   }
 
   /** Clear the VM client (called when app exits but session persists) */
@@ -106,8 +99,25 @@ export class SessionService extends EventEmitter {
     args?: Record<string, unknown>
   ): Promise<InteractionResult> {
     const client = this.requireVmConnection();
-    this.invalidateTreeCache();
-    return client.execute(nodeId, interaction, args);
+    const result = await client.execute(nodeId, interaction, args);
+    
+    // Update cache from the returned tree (source of truth after settle)
+    if (result.tree) {
+      this.treeCache = result.tree;
+      this.treeCacheTime = Date.now();
+    }
+    
+    // Emit interaction event for monitoring
+    this.emit('interaction', {
+      sessionId: this.sessionId,
+      nodeId,
+      interaction,
+      args,
+      success: result.success,
+      error: result.error,
+    });
+    
+    return result;
   }
 
   async getState(nodeId: string): Promise<Record<string, unknown>> {
@@ -117,18 +127,27 @@ export class SessionService extends EventEmitter {
 
   async batch(steps: BatchStep[]): Promise<BatchResult> {
     const client = this.requireVmConnection();
-    this.invalidateTreeCache();
-    return client.batch(steps);
+    const result = await client.batch(steps);
+    
+    // Update cache from the returned tree
+    if (result.tree) {
+      this.treeCache = result.tree;
+      this.treeCacheTime = Date.now();
+    }
+    
+    return result;
   }
 
   async hotReload(clearErrors = false): Promise<HotReloadResult> {
     const client = this.requireVmConnection();
+    // Invalidate cache - hot reload changes the tree but doesn't return it
     this.invalidateTreeCache();
     return client.hotReload(clearErrors);
   }
 
   async hotRestart(clearErrors = true): Promise<HotReloadResult> {
     const client = this.requireVmConnection();
+    // Invalidate cache - hot restart changes the tree but doesn't return it
     this.invalidateTreeCache();
     return client.hotRestart(clearErrors);
   }

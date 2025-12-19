@@ -186,34 +186,7 @@ describe('Fleeter Daemon Integration Tests', () => {
     expect(data.daemon.version).toBeDefined();
   });
 
-  test('should run app (if Flutter is available)', async () => {
-    // Skip if Flutter is not available
-    const flutterPath = Bun.which('flutter');
-    if (!flutterPath) {
-      console.log('Flutter not in PATH, skipping run_app test');
-      return;
-    }
-
-    client.clearEvents();
-    
-    const response = await client.sendCommand('run_app', {
-      device: 'macos',
-    });
-    
-    // This might fail if Flutter isn't available, which is ok
-    if (response.success) {
-      expect(response.data).toHaveProperty('pid');
-      
-      // Wait a bit for the app to start
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      
-      // Stop the app
-      const stopResponse = await client.sendCommand('stop_app');
-      expect(stopResponse.success).toBe(true);
-    } else {
-      console.log('run_app failed (expected if Flutter not configured):', response.error);
-    }
-  }, 60000);
+  // NOTE: run_app test removed - it opens windows and doesn't verify app behavior meaningfully
 
   test('should destroy session', async () => {
     expect(createdSessionId).not.toBeNull();

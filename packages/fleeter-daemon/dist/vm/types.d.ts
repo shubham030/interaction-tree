@@ -42,6 +42,7 @@ export interface InteractionResult {
     success: boolean;
     error?: string;
     duration_ms?: number;
+    tree?: InteractionTarget[];
 }
 export interface BatchStep {
     action: 'tap' | 'doubleTap' | 'longPress' | 'enterText' | 'clearText' | 'drag' | 'scroll' | 'scrollIntoView' | 'waitFor' | 'executeAction';
@@ -61,6 +62,7 @@ export interface BatchResult {
     results: InteractionResult[];
     stoppedAtIndex?: number;
     error?: string;
+    tree?: InteractionTarget[];
 }
 export interface GetTreeOptions {
     includeBounds?: boolean;

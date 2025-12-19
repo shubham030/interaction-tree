@@ -13,11 +13,6 @@ use ratatui::{
 use tui_tree_widget::{Tree, TreeItem};
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
-    // Guard against zero-size areas
-    if area.width < 3 || area.height < 3 {
-        return;
-    }
-
     let t = theme();
 
     let block = Block::default()
@@ -26,20 +21,12 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .border_style(Style::default().fg(t.border));
 
     if let Some(compact) = app.compact_tree() {
-        let child_items: Vec<TreeItem<'_, String>> = compact
+        let items: Vec<TreeItem<'_, String>> = compact
             .tree
             .iter()
             .enumerate()
             .map(|(i, entry)| build_entry_item(entry, &compact.schemas, i))
             .collect();
-
-        let root_label = Line::from(Span::styled(
-            "Root",
-            Style::new().fg(t.title).add_modifier(Modifier::BOLD),
-        ));
-        let root_item = TreeItem::new("root".to_string(), root_label, child_items)
-            .expect("unique ids");
-        let items = vec![root_item];
 
         let tree_widget = Tree::new(&items)
             .expect("tree items have unique identifiers")
@@ -48,12 +35,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 Style::default()
                     .fg(t.text_highlight)
                     .add_modifier(Modifier::BOLD),
-            )
-            // Use different symbols for cursor (→) vs expand/collapse (±/∓)
-            .highlight_symbol("→ ")
-            .node_closed_symbol("▸ ")
-            .node_open_symbol("▾ ")
-            .node_no_children_symbol("  ");
+            );
 
         frame.render_stateful_widget(tree_widget, area, &mut app.session.tree_state);
     } else {
@@ -70,14 +52,9 @@ fn build_entry_item(
     sibling_index: usize,
 ) -> TreeItem<'static, String> {
     match entry {
-        TreeEntry::Context { context, description, children } => {
-            let label_text = if let Some(desc) = description {
-                format!("[{}]: \"{}\"", context, desc)
-            } else {
-                format!("[{}]", context)
-            };
+        TreeEntry::Context { context, children, .. } => {
             let label = Line::from(Span::styled(
-                label_text,
+                context.clone(),
                 Style::new().add_modifier(Modifier::BOLD),
             ));
             let child_items: Vec<_> = children
@@ -153,8 +130,15 @@ fn build_variant_item(
         if let Some(child_id) = variant.children[0].id() {
             spans.push(Span::raw(" → "));
             spans.push(Span::raw(child_id.to_string()));
-            // Show indicator if child has interactions
-            add_schema_info(&mut spans, child_id, schemas);
+            // Add capabilities for the child
+            if let Some(schema) = schemas.get(child_id) {
+                if !schema.capabilities.is_empty() {
+                    spans.push(Span::styled(
+                        format!(" [{}]", schema.capabilities.join(", ")),
+                        Style::new().fg(Color::Green),
+                    ));
+                }
+            }
         }
     }
 
@@ -211,11 +195,17 @@ fn format_id_label(id: &str, schemas: &BTreeMap<String, Schema>) -> Line<'static
 
 fn add_schema_info(spans: &mut Vec<Span<'static>>, id: &str, schemas: &BTreeMap<String, Schema>) {
     if let Some(schema) = schemas.get(id) {
-        // Show a simple indicator if node has interactions available
-        let has_caps = !schema.capabilities.is_empty();
-        let has_actions = !schema.actions.is_empty();
-        if has_caps || has_actions {
-            spans.push(Span::styled(" ●", Style::new().fg(Color::Green)));
+        if !schema.capabilities.is_empty() {
+            spans.push(Span::styled(
+                format!(" [{}]", schema.capabilities.join(", ")),
+                Style::new().fg(Color::Green),
+            ));
+        }
+        if !schema.actions.is_empty() {
+            spans.push(Span::styled(
+                format!(" {{{}}}", schema.actions.join(", ")),
+                Style::new().fg(Color::Magenta),
+            ));
         }
     }
 }

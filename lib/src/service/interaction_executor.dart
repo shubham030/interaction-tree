@@ -6,12 +6,40 @@ import 'package:flutter/widgets.dart';
 import '../core/interactable_mixin.dart';
 import '../core/interaction_action.dart';
 import '../core/interaction_capability.dart';
+import '../core/interaction_context.dart';
 import '../core/interaction_key.dart';
 import '../core/interaction_target.dart';
+
+/// Configuration for settle behavior.
+class SettleConfig {
+  const SettleConfig({
+    this.timeout = const Duration(seconds: 5),
+    this.stabilityWindow = const Duration(milliseconds: 100),
+    this.frameInterval = const Duration(milliseconds: 16),
+  });
+
+  /// Maximum time to wait for settle.
+  final Duration timeout;
+
+  /// How long the tree must be stable before considering it settled.
+  final Duration stabilityWindow;
+
+  /// Interval between frame checks.
+  final Duration frameInterval;
+
+  static const defaultConfig = SettleConfig();
+}
 
 /// Executes interactions on widgets by dispatching real pointer/gesture events.
 class InteractionExecutor {
   InteractionExecutor._();
+
+  static SettleConfig _settleConfig = SettleConfig.defaultConfig;
+
+  /// Configure settle behavior globally.
+  static void configureSettle(SettleConfig config) {
+    _settleConfig = config;
+  }
 
   /// Execute an interaction on a target widget.
   static Future<Map<String, dynamic>> execute({
@@ -400,20 +428,115 @@ class InteractionExecutor {
     }
   }
 
-  /// Pump frames until settled.
+  /// Pump frames until settled - never hangs, always returns.
+  /// 
+  /// Three-phase settle:
+  /// 1. Wait for scheduled frames to complete
+  /// 2. Wait for transient callbacks to drain
+  /// 3. Wait for tree stability (no changes for stabilityWindow)
   static Future<void> _pumpAndSettle() async {
     final binding = WidgetsBinding.instance;
-    
-    // Schedule a frame and wait for it
-    await Future<void>.delayed(Duration.zero);
-    
-    // Allow animations to complete
-    var framesWaited = 0;
-    const maxFrames = 100;
-    
-    while (binding.hasScheduledFrame && framesWaited < maxFrames) {
-      await Future<void>.delayed(const Duration(milliseconds: 16));
-      framesWaited++;
+    final config = _settleConfig;
+    final stopwatch = Stopwatch()..start();
+
+    // Phase 1: Wait for scheduled frames
+    while (binding.hasScheduledFrame && stopwatch.elapsed < config.timeout) {
+      await Future<void>.delayed(config.frameInterval);
     }
+
+    // Phase 2: Wait for transient callbacks to drain
+    while (binding.transientCallbackCount > 0 &&
+        stopwatch.elapsed < config.timeout) {
+      await Future<void>.delayed(config.frameInterval);
+    }
+
+    // Phase 3: Tree stability - wait until tree stops changing
+    String? lastTreeHash;
+    var stableDuration = Duration.zero;
+
+    while (stableDuration < config.stabilityWindow &&
+        stopwatch.elapsed < config.timeout) {
+      final currentHash = _computeTreeHash();
+      if (currentHash == lastTreeHash) {
+        stableDuration += config.frameInterval;
+      } else {
+        stableDuration = Duration.zero;
+        lastTreeHash = currentHash;
+      }
+      await Future<void>.delayed(config.frameInterval);
+    }
+  }
+
+  /// Compute a hash of the current interaction tree for stability detection.
+  static String _computeTreeHash() {
+    final binding = WidgetsBinding.instance;
+    final buffer = StringBuffer();
+
+    void visit(Element element) {
+      final key = element.widget.key;
+      if (key is InteractionKey) {
+        buffer.write(key.id);
+        buffer.write(':');
+        // Include visibility and position for detecting layout changes
+        final renderObject = element.renderObject;
+        if (renderObject is RenderBox && renderObject.hasSize) {
+          final size = renderObject.size;
+          buffer.write('${size.width.toInt()},${size.height.toInt()}');
+        }
+        buffer.write(';');
+      }
+      element.visitChildren(visit);
+    }
+
+    binding.rootElement?.visitChildren(visit);
+    return buffer.toString();
+  }
+
+  /// Get the current tree after settling.
+  static List<Map<String, dynamic>> getSettledTree({
+    bool includeBounds = true,
+    bool includeWidgetType = true,
+    bool includeState = false,
+  }) {
+    final targets = <Map<String, dynamic>>[];
+    final binding = WidgetsBinding.instance;
+
+    void visit(Element element) {
+      final key = element.widget.key;
+      if (key is InteractionKey) {
+        final target = InteractionTarget(
+          key: key,
+          element: element,
+          capabilities: key.capabilities ?? inferCapabilities(element),
+          actions: _getActionsForElement(element),
+        );
+
+        // Only include visible targets (filters out offstage/hidden widgets)
+        if (!target.isVisible) {
+          element.visitChildren(visit);
+          return;
+        }
+
+        final json = target.toJson(
+          includeBounds: includeBounds,
+          includeWidgetType: includeWidgetType,
+        );
+
+        if (includeState) {
+          json['state'] = target.getState();
+        }
+
+        final contexts = InteractionContext.allOf(element);
+        if (contexts.isNotEmpty) {
+          json['contexts'] = contexts.map((c) => c.toJson()).toList();
+        }
+
+        targets.add(json);
+      }
+      element.visitChildren(visit);
+    }
+
+    binding.rootElement?.visitChildren(visit);
+    return targets;
   }
 }

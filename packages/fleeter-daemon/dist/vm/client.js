@@ -184,11 +184,13 @@ export class VMServiceClient extends EventEmitter {
         return result.targets ?? [];
     }
     async execute(id, interaction, args) {
-        const result = (await this.callExtension('ext.interaction_tree.execute', {
+        const rawResult = await this.callExtension('ext.interaction_tree.execute', {
             id,
             interaction,
             args,
-        }));
+        });
+        log.vm.debug({ rawResult, hasTree: !!rawResult?.tree }, 'execute() raw result');
+        const result = rawResult;
         this.emit('interaction', { id, interaction, args, result });
         return result;
     }
@@ -246,10 +248,12 @@ export class VMServiceClient extends EventEmitter {
                 isolateId: this.isolateId,
                 force: false,
             });
+            log.vm.debug({ result }, 'Hot reload result');
             if (result.success === false) {
+                const notices = result.notices?.map(n => n.message).filter(Boolean).join('; ');
                 return {
                     success: false,
-                    error: 'Reload failed - sources may have errors',
+                    error: notices || 'Reload failed - sources may have errors',
                 };
             }
             // Trigger reassemble after reloadSources for Flutter to update widgets
@@ -416,14 +420,12 @@ export class VMServiceClient extends EventEmitter {
             log.vm.debug({ extensionKind }, 'Extension event received');
             if (extensionKind === 'Flutter.Frame') {
                 // Rate-limit frame events to 5 FPS
-                // Only trigger tree update after navigation or reload
                 if (this.receivedNavigationEvent || this.receivedReloadEvent) {
-                    log.vm.debug('Frame event after nav/reload - triggering tree update');
+                    log.vm.debug('Frame event after nav/reload');
                     this.frameRateLimiter.call(() => {
                         this.receivedNavigationEvent = false;
                         this.receivedReloadEvent = false;
                         this.emit('frame');
-                        this.emit('treeChanged');
                     });
                 }
             }
@@ -432,13 +434,9 @@ export class VMServiceClient extends EventEmitter {
                 this.receivedNavigationEvent = true;
                 const route = event.extensionData?.route;
                 this.emit('navigation', route);
-                // Emit tree changed immediately on navigation
-                this.emit('treeChanged');
             }
             else if (extensionKind === 'Flutter.FirstFrame') {
-                log.vm.info('First frame event - triggering initial tree fetch');
-                // First frame after app start - definitely want tree
-                this.emit('treeChanged');
+                log.vm.info('First frame event');
             }
             else if (extensionKind === 'Flutter.Error') {
                 // Collect Flutter errors (same as Dart MCP)
@@ -478,7 +476,6 @@ export class VMServiceClient extends EventEmitter {
             if (event.kind === 'IsolateReload') {
                 this.receivedReloadEvent = true;
                 this.emit('reload');
-                this.emit('treeChanged');
             }
         }
     }

@@ -49,7 +49,25 @@ class InteractionTarget {
   bool get isVisible {
     final box = renderBox;
     if (box == null) return false;
-    return box.hasSize && box.size.width > 0 && box.size.height > 0;
+    if (!box.hasSize || box.size.width <= 0 || box.size.height <= 0) {
+      return false;
+    }
+
+    // Check if any ancestor is offstage (e.g., inactive Navigator routes)
+    RenderObject? current = box;
+    while (current != null) {
+      // Check for Offstage widgets (used by Navigator for inactive routes)
+      if (current is RenderOffstage && current.offstage) {
+        return false;
+      }
+      // Check if not painting (e.g., Opacity(0))
+      if (current is RenderOpacity && current.opacity == 0) {
+        return false;
+      }
+      current = current.parent;
+    }
+
+    return true;
   }
 
   /// Extract the current text value from a text field, if available.

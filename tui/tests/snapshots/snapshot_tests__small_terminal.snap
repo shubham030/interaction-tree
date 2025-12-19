@@ -1,0 +1,61 @@
+---
+source: tests/snapshot_tests.rs
+expression: "render_to_string(&mut app, 40, 12)"
+---
+TestBackend { buffer: Buffer {
+    area: Rect { x: 0, y: 0, width: 40, height: 12 },
+    content: [
+        " Flutest_app │ @app-one │ pid 12345     ",
+        "┌ Flutter [1/0] ───────────────────────┐",
+        "│                                      │",
+        "│                                      │",
+        "│                                      │",
+        "│                                      │",
+        "│                                      │",
+        "│                                      │",
+        "│                                      │",
+        "│                                      │",
+        "└──────────────────────────────────────┘",
+        "hl:tabs ↑↓/jk:scroll /:filter s:sessions",
+    ],
+    styles: [
+        x: 0, y: 0, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 1, y: 0, fg: Cyan, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 4, y: 0, fg: Blue, bg: Reset, underline: Reset, modifier: NONE,
+        x: 12, y: 0, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 15, y: 0, fg: Magenta, bg: Reset, underline: Reset, modifier: NONE,
+        x: 23, y: 0, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 26, y: 0, fg: Green, bg: Reset, underline: Reset, modifier: NONE,
+        x: 35, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 0, y: 1, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 1, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 39, y: 2, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 1, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 39, y: 3, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 1, y: 4, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 39, y: 4, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 1, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 39, y: 5, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 1, y: 6, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 39, y: 6, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 1, y: 7, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 39, y: 7, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 1, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 39, y: 8, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 1, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 39, y: 9, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 0, y: 11, fg: Yellow, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 2, y: 11, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 7, y: 11, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 8, y: 11, fg: Yellow, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 13, y: 11, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 20, y: 11, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 21, y: 11, fg: Yellow, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 22, y: 11, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 29, y: 11, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 30, y: 11, fg: Yellow, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 31, y: 11, fg: DarkGray, bg: Reset, underline: Reset, modifier: NONE,
+    ]
+}, scrollback: Buffer {
+    area: Rect { x: 0, y: 0, width: 40, height: 0 }
+}, cursor: false, pos: (0, 0) }
