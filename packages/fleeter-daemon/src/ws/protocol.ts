@@ -58,6 +58,7 @@ export type CommandAction =
   | 'get_context'
   // Agent
   | 'agent_message'
+  | 'debug_agent_message'  // Debug agent (runtime-only investigation)
   // Status
   | 'get_status'
   | 'health_check';

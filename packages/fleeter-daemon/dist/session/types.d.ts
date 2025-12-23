@@ -1,7 +1,7 @@
 /**
  * Session types for fleeter-daemon.
  */
-import type { AgentExecutor } from '../agent/index.js';
+import type { AgentExecutor, DebugAgentExecutor } from '../agent/index.js';
 export type AppStatus = 'not_running' | 'starting' | 'running' | 'stopped' | 'error';
 export interface SessionInfo {
     id: string;
@@ -46,6 +46,7 @@ export interface Session {
     createdAt: Date;
     lastActiveAt: Date;
     agent?: AgentExecutor;
+    debugAgent?: DebugAgentExecutor;
     logs: string[];
     chatHistory: ChatMessage[];
 }

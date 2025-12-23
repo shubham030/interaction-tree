@@ -15,7 +15,9 @@ export declare class DaemonServer {
     private sessionManager;
     private flutterManager;
     private sessionServices;
+    private debugAgentExecutor;
     constructor(sessionManager: SessionManager, flutterManager: FlutterProcessManager);
+    private initDebugAgent;
     registerSessionService(sessionId: string, service: SessionService): void;
     unregisterSessionService(sessionId: string): void;
     getSessionService(sessionId: string): SessionService | undefined;

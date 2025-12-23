@@ -6,7 +6,7 @@ import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
 import type { Session, SessionInfo, CreateSessionOptions, ChatMessage } from './types.js';
 import { MAX_SESSION_LOGS, MAX_CHAT_HISTORY } from './types.js';
-import { AgentExecutor } from '../agent/index.js';
+import { AgentExecutor, DebugAgentExecutor } from '../agent/index.js';
 
 export class SessionManager extends EventEmitter {
   private sessions = new Map<string, Session>();
@@ -34,6 +34,7 @@ export class SessionManager extends EventEmitter {
       createdAt: now,
       lastActiveAt: now,
       agent: new AgentExecutor(),  // Create agent for this session
+      debugAgent: new DebugAgentExecutor(),  // Create debug agent (runtime-only investigation)
       logs: [],  // Session-level logs persist across reconnects
       chatHistory: [],  // Conversation history for TUI
     };
@@ -246,8 +247,9 @@ export class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.chatHistory = [];
-      // Also clear the agent session to start fresh conversation
+      // Also clear the agent sessions to start fresh conversation
       session.agent?.clearSession();
+      session.debugAgent?.clearSession();
     }
   }
 

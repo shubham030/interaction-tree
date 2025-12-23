@@ -2,7 +2,7 @@
  * Session types for fleeter-daemon.
  */
 
-import type { AgentExecutor } from '../agent/index.js';
+import type { AgentExecutor, DebugAgentExecutor } from '../agent/index.js';
 
 export type AppStatus = 'not_running' | 'starting' | 'running' | 'stopped' | 'error';
 
@@ -47,6 +47,7 @@ export interface Session {
   createdAt: Date;
   lastActiveAt: Date;
   agent?: AgentExecutor;  // Per-session agent
+  debugAgent?: DebugAgentExecutor;  // Per-session debug agent (runtime-only investigation)
   logs: string[];  // Persisted logs (survives process restarts)
   chatHistory: ChatMessage[];  // Conversation history for TUI
 }

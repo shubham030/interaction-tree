@@ -13,9 +13,18 @@ export class DaemonServer {
     sessionManager;
     flutterManager;
     sessionServices = new Map();
+    // Daemon-level debug agent (can work without a pre-existing session)
+    debugAgentExecutor = null;
     constructor(sessionManager, flutterManager) {
         this.sessionManager = sessionManager;
         this.flutterManager = flutterManager;
+        // Initialize daemon-level debug agent
+        this.initDebugAgent();
+    }
+    async initDebugAgent() {
+        const { DebugAgentExecutor } = await import('../agent/executor.js');
+        this.debugAgentExecutor = new DebugAgentExecutor();
+        log.ws.info('Daemon-level debug agent initialized');
     }
     registerSessionService(sessionId, service) {
         this.sessionServices.set(sessionId, service);
@@ -492,6 +501,92 @@ export class DaemonServer {
                             success: false,
                             error: err instanceof Error ? err.message : String(err),
                         });
+                    }
+                    break;
+                }
+                case 'debug_agent_message': {
+                    // Debug Agent - AUTONOMOUS Flutter runtime expert
+                    // Can work without a pre-existing session - creates sessions as needed
+                    log.agent.debug({ clientId }, 'Received debug_agent_message');
+                    if (!this.debugAgentExecutor) {
+                        sendResponse({ success: false, error: 'Debug agent not initialized yet. Please try again.' });
+                        return;
+                    }
+                    const clientEntry = this.clients.get(clientId);
+                    const currentSessionId = clientEntry?.client.currentSessionId;
+                    const { intent, projectPath } = data;
+                    log.agent.info({ currentSessionId, intent, projectPath }, 'Processing debug agent intent');
+                    // Broadcast user message to ALL connected clients
+                    const clientType = clientEntry?.client.type ?? 'unknown';
+                    const debugUserMessageEvent = {
+                        type: 'agent_stream',
+                        id,
+                        sessionId: currentSessionId ?? 'daemon',
+                        event: { kind: 'user_message', text: intent, clientId: clientType },
+                    };
+                    for (const { ws: clientWs } of this.clients.values()) {
+                        if (clientWs.readyState === WebSocket.OPEN) {
+                            clientWs.send(JSON.stringify(debugUserMessageEvent));
+                        }
+                    }
+                    // Get current session service if we have a session
+                    const currentService = currentSessionId ? this.sessionServices.get(currentSessionId) : undefined;
+                    const currentSession = currentSessionId ? this.sessionManager.get(currentSessionId) : undefined;
+                    // Track text for response
+                    let debugTextBuffer = '';
+                    const onDebugEvent = (partialEvent) => {
+                        log.agent.trace({ event: partialEvent.event }, 'Debug agent event');
+                        const evt = partialEvent.event;
+                        // Track text
+                        if (evt.kind === 'text_delta') {
+                            debugTextBuffer += evt.text;
+                        }
+                        // Broadcast streaming events to ALL connected clients
+                        const streamEvent = {
+                            type: 'agent_stream',
+                            id,
+                            sessionId: currentSessionId ?? 'daemon',
+                            event: partialEvent.event,
+                        };
+                        for (const { ws: clientWs } of this.clients.values()) {
+                            if (clientWs.readyState === WebSocket.OPEN) {
+                                clientWs.send(JSON.stringify(streamEvent));
+                            }
+                        }
+                    };
+                    try {
+                        log.agent.debug({ currentSessionId }, 'Calling daemon-level debugAgent.execute');
+                        const result = await this.debugAgentExecutor.execute({
+                            intent,
+                            sessionService: currentService,
+                            sessionManager: this.sessionManager,
+                            getSessionService: (sessionId) => this.sessionServices.get(sessionId),
+                            currentSessionId: currentSessionId ?? undefined,
+                            projectPath: projectPath,
+                            cwd: currentSession?.projectPath ?? projectPath ?? process.cwd(),
+                            onEvent: onDebugEvent,
+                        });
+                        log.agent.info({ status: result.status }, 'Debug agent execute completed');
+                        const response = {
+                            type: 'agent_response',
+                            id,
+                            status: result.status,
+                            summary: result.summary,
+                            error: result.error,
+                            question: result.question,
+                            sdkSessionId: result.sessionId,
+                        };
+                        log.agent.debug({ responseType: response.type, status: response.status }, 'Sending debug agent response');
+                        ws.send(JSON.stringify(response));
+                    }
+                    catch (err) {
+                        log.agent.error({ err }, 'Debug agent execute failed');
+                        ws.send(JSON.stringify({
+                            type: 'agent_response',
+                            id,
+                            status: 'error',
+                            error: err instanceof Error ? err.message : String(err),
+                        }));
                     }
                     break;
                 }
