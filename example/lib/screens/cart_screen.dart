@@ -261,7 +261,7 @@ class CartScreen extends StatelessWidget {
                   'checkout-btn',
                   description: 'Proceed to checkout',
                 ),
-                onPressed: onCheckout,
+                onPressed: cartState.isEmpty ? onCheckout : onCheckout,
                 icon: const Icon(Icons.shopping_cart_checkout),
                 label: const Text('Proceed to Checkout'),
               ),
@@ -299,9 +299,8 @@ class CartScreen extends StatelessWidget {
   }
   
   void _updateQuantity(CartItem item, int delta) {
-    if (delta > 0) {
-      cartState.addItem(item.productId, item.name, item.price, delta);
-    }
+    final newQty = item.quantity + delta;
+    cartState.updateQuantity(item.productId, newQty);
   }
   
   void _removeItem(CartItem item) {

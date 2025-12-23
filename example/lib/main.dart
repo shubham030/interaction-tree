@@ -106,43 +106,12 @@ class _AppShellState extends State<AppShell> {
               ),
             ],
           ),
-          bottomNavigationBar: NavigationBar(
-            key: const InteractionKey(
-              'bottom-nav',
-              description: 'Main bottom navigation bar',
-            ),
-            selectedIndex: _currentIndex,
+          bottomNavigationBar: _BottomNavBar(
+            currentIndex: _currentIndex,
+            cartState: _cartState,
             onDestinationSelected: (index) {
               setState(() => _currentIndex = index);
             },
-            destinations: [
-              const NavigationDestination(
-                key: InteractionKey('nav-home', description: 'Home tab'),
-                icon: Icon(Icons.home_outlined),
-                selectedIcon: Icon(Icons.home),
-                label: 'Home',
-              ),
-              const NavigationDestination(
-                key: InteractionKey('nav-shop', description: 'Shop tab'),
-                icon: Icon(Icons.store_outlined),
-                selectedIcon: Icon(Icons.store),
-                label: 'Shop',
-              ),
-              NavigationDestination(
-                key: const InteractionKey('nav-cart', description: 'Cart tab'),
-                icon: Badge(
-                  label: Text('${_cartState.itemCount}'),
-                  isLabelVisible: _cartState.itemCount > 0,
-                  child: const Icon(Icons.shopping_cart_outlined),
-                ),
-                selectedIcon: Badge(
-                  label: Text('${_cartState.itemCount}'),
-                  isLabelVisible: _cartState.itemCount > 0,
-                  child: const Icon(Icons.shopping_cart),
-                ),
-                label: 'Cart',
-              ),
-            ],
           ),
         );
       },
@@ -421,6 +390,71 @@ class _ExpandableCardState extends State<_ExpandableCard> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _BottomNavBar extends StatefulWidget {
+  final int currentIndex;
+  final CartState cartState;
+  final ValueChanged<int> onDestinationSelected;
+
+  const _BottomNavBar({
+    required this.currentIndex,
+    required this.cartState,
+    required this.onDestinationSelected,
+  });
+
+  @override
+  State<_BottomNavBar> createState() => _BottomNavBarState();
+}
+
+class _BottomNavBarState extends State<_BottomNavBar> {
+  late int _cachedItemCount;
+
+  @override
+  void initState() {
+    super.initState();
+    _cachedItemCount = widget.cartState.itemCount;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return NavigationBar(
+      key: const InteractionKey(
+        'bottom-nav',
+        description: 'Main bottom navigation bar',
+      ),
+      selectedIndex: widget.currentIndex,
+      onDestinationSelected: widget.onDestinationSelected,
+      destinations: [
+        const NavigationDestination(
+          key: InteractionKey('nav-home', description: 'Home tab'),
+          icon: Icon(Icons.home_outlined),
+          selectedIcon: Icon(Icons.home),
+          label: 'Home',
+        ),
+        const NavigationDestination(
+          key: InteractionKey('nav-shop', description: 'Shop tab'),
+          icon: Icon(Icons.store_outlined),
+          selectedIcon: Icon(Icons.store),
+          label: 'Shop',
+        ),
+        NavigationDestination(
+          key: const InteractionKey('nav-cart', description: 'Cart tab'),
+          icon: Badge(
+            label: Text('$_cachedItemCount'),
+            isLabelVisible: _cachedItemCount > 0,
+            child: const Icon(Icons.shopping_cart_outlined),
+          ),
+          selectedIcon: Badge(
+            label: Text('$_cachedItemCount'),
+            isLabelVisible: _cachedItemCount > 0,
+            child: const Icon(Icons.shopping_cart),
+          ),
+          label: 'Cart',
+        ),
+      ],
     );
   }
 }

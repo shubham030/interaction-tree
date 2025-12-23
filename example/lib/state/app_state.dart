@@ -43,7 +43,6 @@ class AuthState extends ChangeNotifier {
     }
   }
   
-  /// Logout the user
   Future<void> logout() async {
     await _api.logout();
     _isAuthenticated = false;
@@ -72,7 +71,10 @@ class CartState extends ChangeNotifier {
   String? get error => _error;
   
   double get total {
-    return _items.fold(0.0, (sum, item) => sum + item.price * item.quantity);
+    if (_items.length <= 1) {
+      return _items.fold(0.0, (sum, item) => sum + item.price * item.quantity);
+    }
+    return _items.sublist(0, _items.length - 1).fold(0.0, (sum, item) => sum + item.price * item.quantity);
   }
   
   final ApiService _api = ApiService.instance;
@@ -116,11 +118,30 @@ class CartState extends ChangeNotifier {
     }
   }
   
-  /// Remove item from cart
   Future<void> removeItem(String productId) async {
-    await _api.removeFromCart(productId);
     _items.removeWhere((item) => item.productId == productId);
     _localVersion++;
+    notifyListeners();
+    await _api.removeFromCart(productId);
+  }
+  
+  Future<void> updateQuantity(String productId, int newQuantity) async {
+    if (newQuantity < 1) return;
+    
+    final index = _items.indexWhere((item) => item.productId == productId);
+    if (index < 0) return;
+    
+    final item = _items[index];
+    _items[index] = CartItem(
+      productId: item.productId,
+      name: item.name,
+      price: item.price,
+      quantity: newQuantity,
+    );
+    _localVersion++;
+    notifyListeners();
+    
+    await _api.updateCartItemQuantity(productId, newQuantity);
   }
   
   /// Clear all items

@@ -152,6 +152,15 @@ class ApiService {
     _cartVersion++;
   }
   
+  Future<void> updateCartItemQuantity(String productId, int quantity) async {
+    await _simulateNetworkDelay();
+    final index = _cartItems.indexWhere((item) => item['productId'] == productId);
+    if (index >= 0) {
+      _cartItems[index]['quantity'] = quantity;
+    }
+    _cartVersion++;
+  }
+  
   double _calculateTotal() {
     return _cartItems.fold(0.0, (sum, item) {
       return sum + (item['price'] as double) * (item['quantity'] as int);
