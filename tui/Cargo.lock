@@ -54,6 +54,7 @@ dependencies = [
  "futures-util",
  "pulldown-cmark",
  "ratatui",
+ "serde_json",
  "textwrap",
  "tokio",
  "tracing",
