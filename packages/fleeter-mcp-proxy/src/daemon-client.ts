@@ -107,8 +107,13 @@ export class DaemonClient {
     }
 
     const id = uuidv4();
-    // run_app can take a long time for cold builds
-    const timeoutMs = action === 'run_app' ? 300000 : 30000;
+    // Timeout varies by action type:
+    // - debug_agent_message: 10 min (agent runs Claude Code, multiple tool calls)
+    // - run_app: 5 min (cold builds can be slow)
+    // - default: 30 sec
+    const timeoutMs = action === 'debug_agent_message' ? 600000 
+                    : action === 'run_app' ? 300000 
+                    : 30000;
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {

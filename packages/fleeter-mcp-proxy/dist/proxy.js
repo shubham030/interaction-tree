@@ -1,195 +1,58 @@
 /**
  * MCP Proxy - translates MCP protocol to daemon WebSocket commands.
+ *
+ * Exposes a single tool: send_debug_message
+ * The Debug Agent handles everything: sessions, app lifecycle, investigation.
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, } from '@modelcontextprotocol/sdk/types.js';
 const TOOLS = [
-    // Session management
     {
-        name: 'create_session',
-        description: 'Create a new Flutter session',
+        name: 'send_debug_message',
+        description: `Interact with a Flutter app via the Debug Agent.
+
+The Debug Agent is a FULLY AUTONOMOUS Flutter runtime expert that handles:
+- Session management (creates session if needed, connects to existing)
+- App lifecycle (runs app if not running, hot reload/restart)
+- Runtime investigation (logs, errors, widget tree, widget states)
+- Fix validation (applies changes, tests, reports results)
+
+Use this for ALL Flutter-related tasks:
+- "Debug why the cart doesn't update when removing items"
+- "Validate my fix (I added notifyListeners to removeItem)"
+- "Test the checkout flow and report issues"
+- "Tap the login button and check for errors"
+- "What's the current screen state?"
+
+The Debug Agent returns structured reports with:
+- Runtime observations (logs, errors, widget states)
+- Reproduction steps with results
+- Hypothesis based on runtime behavior
+- Keywords to search in source code (for investigation)
+- Validation results (for fix validation)
+
+After receiving an investigation report, YOU (Amp) should:
+1. Read source code based on keywords provided
+2. Apply the fix
+3. Ask Debug Agent to validate the fix
+
+The session and app persist between calls - the Debug Agent reconnects automatically.
+
+IMPORTANT: Always provide the projectPath when debugging a Flutter app.`,
         inputSchema: {
             type: 'object',
             properties: {
-                name: { type: 'string', description: 'Session name' },
-                projectPath: { type: 'string', description: 'Path to Flutter project' },
-            },
-            required: ['name', 'projectPath'],
-        },
-    },
-    {
-        name: 'list_sessions',
-        description: 'List all Flutter sessions',
-        inputSchema: { type: 'object', properties: {} },
-    },
-    {
-        name: 'connect_session',
-        description: 'Connect to an existing session',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                sessionId: { type: 'string', description: 'Session ID or name' },
-            },
-            required: ['sessionId'],
-        },
-    },
-    {
-        name: 'destroy_session',
-        description: 'Destroy a session',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                sessionId: { type: 'string', description: 'Session ID' },
-            },
-            required: ['sessionId'],
-        },
-    },
-    // App lifecycle
-    {
-        name: 'run_app',
-        description: 'Run Flutter app in current session',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                device: { type: 'string', description: 'Target device' },
-                flavor: { type: 'string', description: 'Build flavor' },
-                target: { type: 'string', description: 'Target file' },
-            },
-        },
-    },
-    {
-        name: 'stop_app',
-        description: 'Stop Flutter app in current session',
-        inputSchema: { type: 'object', properties: {} },
-    },
-    {
-        name: 'hot_reload',
-        description: 'Hot reload the running app',
-        inputSchema: { type: 'object', properties: {} },
-    },
-    {
-        name: 'hot_restart',
-        description: 'Hot restart the running app',
-        inputSchema: { type: 'object', properties: {} },
-    },
-    // Interaction tree
-    {
-        name: 'get_tree',
-        description: 'Get interaction tree from running app',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                summaryOnly: { type: 'boolean', description: 'Only include user widgets' },
-            },
-        },
-    },
-    {
-        name: 'execute_interaction',
-        description: 'Execute an interaction on a widget',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                nodeId: { type: 'string', description: 'Target node ID' },
-                interaction: { type: 'string', description: 'Interaction name' },
-                args: { type: 'object', description: 'Interaction arguments' },
-            },
-            required: ['nodeId', 'interaction'],
-        },
-    },
-    // Logs & Status
-    {
-        name: 'get_logs',
-        description: 'Get Flutter app logs from current session',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                maxLines: { type: 'number', description: 'Maximum number of log lines to return (default: 100)' },
-            },
-        },
-    },
-    {
-        name: 'get_status',
-        description: 'Get daemon and session status',
-        inputSchema: { type: 'object', properties: {} },
-    },
-    // Widget state
-    {
-        name: 'get_state',
-        description: 'Get the state of a specific widget by its node ID',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                nodeId: { type: 'string', description: 'Target node ID' },
-            },
-            required: ['nodeId'],
-        },
-    },
-    // Batch operations
-    {
-        name: 'batch',
-        description: 'Execute multiple interactions in sequence',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                steps: {
-                    type: 'array',
-                    description: 'Array of interaction steps to execute',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            nodeId: { type: 'string', description: 'Target node ID' },
-                            interaction: { type: 'string', description: 'Interaction name' },
-                            args: { type: 'object', description: 'Interaction arguments' },
-                            delayMs: { type: 'number', description: 'Delay in milliseconds before this step' },
-                        },
-                        required: ['nodeId', 'interaction'],
-                    },
+                message: {
+                    type: 'string',
+                    description: 'What to do in the Flutter app (debug, validate, interact, test)'
+                },
+                projectPath: {
+                    type: 'string',
+                    description: 'Absolute path to the Flutter project directory. Required for creating sessions.',
                 },
             },
-            required: ['steps'],
-        },
-    },
-    // Error handling
-    {
-        name: 'get_errors',
-        description: 'Get runtime errors from the Flutter app',
-        inputSchema: { type: 'object', properties: {} },
-    },
-    // Session management (additional)
-    {
-        name: 'disconnect_session',
-        description: 'Disconnect from the current session without destroying it',
-        inputSchema: { type: 'object', properties: {} },
-    },
-    // Health
-    {
-        name: 'health_check',
-        description: 'Check if the daemon is healthy and responding',
-        inputSchema: { type: 'object', properties: {} },
-    },
-    // Context collection
-    {
-        name: 'get_context',
-        description: 'Get complete app context for debugging/issue reproduction. Returns tree, recent logs, runtime errors, and app status in one call.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                maxLogs: { type: 'number', description: 'Maximum log lines to include (default: 50)' },
-                summaryTree: { type: 'boolean', description: 'Only include user widgets in tree (default: true)' },
-            },
-        },
-    },
-    // Agent communication
-    {
-        name: 'send_agent_message',
-        description: 'Send a message/intent to the Flutter agent. The agent will process it and the conversation will be visible in the TUI. Use this for natural language commands like "tap the login button" or "fill in the email field with test@example.com".',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                message: { type: 'string', description: 'The message or intent to send to the agent' },
-            },
-            required: ['message'],
+            required: ['message', 'projectPath'],
         },
     },
 ];
@@ -208,17 +71,19 @@ export class McpProxy {
         this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const { name, arguments: args } = request.params;
             try {
-                // Special handling for send_agent_message -> maps to agent_message
-                if (name === 'send_agent_message') {
-                    const { message } = args;
-                    const result = await this.daemonClient.sendCommand('agent_message', { intent: message });
+                if (name === 'send_debug_message') {
+                    const { message, projectPath } = args;
+                    const result = await this.daemonClient.sendCommand('debug_agent_message', {
+                        intent: message,
+                        projectPath,
+                    });
                     return {
                         content: [{ type: 'text', text: JSON.stringify(result ?? { success: true }, null, 2) }],
                     };
                 }
-                const result = await this.daemonClient.sendCommand(name, args);
                 return {
-                    content: [{ type: 'text', text: JSON.stringify(result ?? { success: true }, null, 2) }],
+                    content: [{ type: 'text', text: `Unknown tool: ${name}` }],
+                    isError: true,
                 };
             }
             catch (err) {
