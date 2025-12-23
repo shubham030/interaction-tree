@@ -2,6 +2,10 @@
 //!
 //! This library provides the core components for the it-tui application,
 //! including app state management, UI rendering, and WebSocket communication.
+//!
+//! Note: This library is primarily compiled as part of the binary.
+//! Internal modules may show as unused when compiled as a standalone library.
+#![allow(dead_code)]
 
 mod address;
 pub mod app;

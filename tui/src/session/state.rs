@@ -38,6 +38,7 @@ pub struct SessionState {
     pub last_agent_error: Option<String>,
 
     /// Maximum events to keep per log type
+    #[allow(dead_code)]
     max_events: usize,
 }
 

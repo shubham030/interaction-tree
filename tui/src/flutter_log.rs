@@ -14,7 +14,7 @@ pub struct FlutterLogEntry {
 
 #[derive(Debug, Clone)]
 pub enum FlutterLogKind {
-    AppProgress { id: String, message: String, finished: bool },
+    AppProgress { #[allow(dead_code)] id: String, message: String, finished: bool },
     AppLog { message: String, error: bool },
     AppStarted,
     AppDebugPort { ws_uri: String },

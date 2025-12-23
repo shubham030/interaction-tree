@@ -44,6 +44,7 @@ pub struct App {
     pub log_viewport_height: usize,
 
     pub needs_tree_fetch: bool,
+    #[allow(dead_code)]
     pub pending_session_connect: Option<String>,
 
     pub throbber_state: throbber_widgets_tui::ThrobberState,
@@ -602,6 +603,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn in_answer_mode(&self) -> bool {
         self.session.conversation_id.is_some()
     }
@@ -689,6 +691,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn cancel_answer_mode(&mut self) {
         self.session.conversation_id = None;
         self.session.agent_question = None;
@@ -817,6 +820,7 @@ impl App {
     }
 
     /// Reset log view state (when switching tabs)
+    #[allow(dead_code)]
     pub fn reset_log_view(&mut self) {
         self.log_view = LogViewState::new();
         self.scroll_offset = 0;
@@ -842,6 +846,7 @@ impl App {
         self.session.tree_state.key_right();
     }
 
+    #[allow(dead_code)]
     pub fn tree_selected(&self) -> Option<&String> {
         self.session.tree_state.selected().last()
     }
@@ -983,6 +988,7 @@ impl App {
         self.scroll_offset = 0;
     }
 
+    #[allow(dead_code)]
     pub fn tick(&mut self) {
         self.throbber_state.calc_next();
     }

@@ -9,6 +9,7 @@ use crate::ws::protocol::{ClientHello, IncomingMessage, OutgoingMessage, ServerH
 #[derive(Debug, Clone)]
 pub enum WsEvent {
     Connected {
+        #[allow(dead_code)]
         client_id: String,
         daemon_version: String,
         sessions: Vec<SessionSummary>,

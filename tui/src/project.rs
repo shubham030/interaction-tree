@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 pub struct ProjectInfo {
     pub path: PathBuf,
     pub name: String,
+    #[allow(dead_code)]
     pub is_flutter: bool,
 }
 

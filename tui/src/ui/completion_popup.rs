@@ -3,6 +3,7 @@ use ratatui::{layout::Rect, Frame};
 
 // Completion popup - currently unused, hotkey-driven UI instead
 // Keeping the module for potential future use with command mode
+#[allow(dead_code)]
 pub fn render(_frame: &mut Frame, _app: &App, _input_area: Rect) {
     // Disabled - no command mode currently
 }

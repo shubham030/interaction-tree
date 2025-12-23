@@ -5,6 +5,9 @@
 //! - `id[n]` - Select nth instance (0-indexed)
 //! - `id.child` - Navigate to child node
 //! - `id:variant[n]` - Select nth instance of variant (grouped by child structure)
+//!
+//! This module is tested and planned for future use in TUI navigation.
+#![allow(dead_code)]
 
 use std::fmt;
 

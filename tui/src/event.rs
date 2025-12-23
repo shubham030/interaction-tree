@@ -795,6 +795,7 @@ async fn execute_interaction(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn current_event_count(app: &App) -> usize {
     use crate::app::ContentTab;
     match app.content_tab {

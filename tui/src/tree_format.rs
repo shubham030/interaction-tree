@@ -254,6 +254,7 @@ impl CompactTree {
     }
 
     /// Convert to printable format for LLM consumption
+    #[allow(dead_code)]
     pub fn to_printable(&self) -> String {
         format!("{}", self)
     }
