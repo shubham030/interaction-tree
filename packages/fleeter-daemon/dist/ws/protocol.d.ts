@@ -1,7 +1,7 @@
 /**
  * WebSocket protocol types for fleeter-daemon.
  */
-export type ClientType = 'mcp' | 'tui';
+export type ClientType = 'mcp' | 'tui' | 'toolbox';
 export interface ConnectedClient {
     id: string;
     type: ClientType;

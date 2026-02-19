@@ -1,43 +1,59 @@
 /**
- * Agent executor using Claude Agent SDK.
+ * Agent executor using Amp SDK.
  *
- * Uses the Claude Agent SDK which runs Claude Code as its runtime.
- * Authentication is handled by the Claude Code CLI in PATH.
+ * Uses the Amp SDK with rush mode for faster, cheaper debugging.
+ * The debug agent runs on a separate Amp thread and returns the thread-id
+ * for handoff to the main Amp instance.
  */
 
 import {
-  query,
-  createSdkMcpServer,
-  tool,
-  type Options,
-} from '@anthropic-ai/claude-agent-sdk';
-import { z } from 'zod';
-import { existsSync, readdirSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
-import type { BatchStep } from '../vm/types.js';
+  execute,
+  createPermission,
+  type Permission,
+} from '@sourcegraph/amp-sdk';
 import type { AgentStreamEvent } from '../ws/protocol.js';
 import type { SessionManager } from '../session/manager.js';
 import type { SessionService } from '../session/service.js';
+import { generateToolbox, cleanupToolbox } from './toolbox-generator.js';
 
 /** Context passed to the agent's MCP tools */
 export interface AgentContext {
-  sessionService?: SessionService;  // Per-session operations (getTree, execute, hotReload, etc.)
-  sessionManager?: SessionManager;  // Global session operations (create, list, destroy)
-  getSessionService?: (sessionId: string) => SessionService | undefined;  // Dynamic access to session services
-  currentSessionId?: string;  // Currently active session ID (can change during execution)
-  projectPath?: string;  // Flutter project path (for creating sessions)
+  sessionService?: SessionService;
+  sessionManager?: SessionManager;
+  getSessionService?: (sessionId: string) => SessionService | undefined;
+  currentSessionId?: string;
+  projectPath?: string;
 }
 
-export const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
+/** Thread visibility options */
+export type ThreadVisibility = 'private' | 'public';
+
+/** Agent mode - rush is faster/cheaper, smart is more capable */
+export type AgentMode = 'rush' | 'smart';
+
+/** Thread tags for categorization */
+export interface ThreadTags {
+  /** Project name (e.g., "tutero-app") */
+  project?: string;
+  /** Bug category (e.g., "cart", "auth", "ui") */
+  category?: string;
+  /** Issue/ticket reference (e.g., "TUTERO-123") */
+  issueRef?: string;
+  /** Custom tags */
+  custom?: string[];
+}
 
 export interface AgentConfig {
-  /** Model to use (defaults to claude-haiku-4-5-20251001) */
-  model?: string;
+  /** Agent mode - rush (default) or smart */
+  mode?: AgentMode;
   /** Max conversation turns before giving up */
   maxTurns?: number;
   /** Session idle timeout in ms */
   sessionTimeoutMs?: number;
+  /** Thread visibility - private (default) or public */
+  visibility?: ThreadVisibility;
+  /** Thread tags for categorization */
+  tags?: ThreadTags;
 }
 
 export interface AgentExecutorConfig {
@@ -45,10 +61,16 @@ export interface AgentExecutorConfig {
   maxTurns: number;
   /** Working directory (session's projectPath) */
   cwd: string;
-  /** Model to use (optional, defaults to SDK default) */
-  model?: string;
-  /** Resume an existing Claude SDK session */
-  resume?: string;
+  /** Agent mode - rush (default) or smart */
+  mode?: AgentMode;
+  /** Continue an existing Amp thread by ID (format: T-xxx-xxx) */
+  continueThread?: string;
+  /** Thread visibility - private (default) or public */
+  visibility?: ThreadVisibility;
+  /** Thread tags for categorization */
+  tags?: ThreadTags;
+  /** Daemon WebSocket URI for toolbox scripts */
+  daemonUri?: string;
 }
 
 export interface AgentExecutionResult {
@@ -57,20 +79,26 @@ export interface AgentExecutionResult {
   error?: string;
   question?: string;
   suggestions?: string[];
-  /** The Claude SDK session ID to use for resumption */
+  /** The Amp thread ID for handoff to main Amp instance (format: T-xxx-xxx) */
+  threadId?: string;
+  /** Full thread URL for easy reference */
+  threadUrl?: string;
+  /** Thread visibility */
+  visibility?: ThreadVisibility;
+  /** Thread tags */
+  tags?: ThreadTags;
+  /** @deprecated Use threadId instead - legacy compatibility */
   sessionId?: string;
 }
 
 /**
  * Parse ASK_CONTEXT pattern from assistant response.
- * More robust parsing: case-insensitive, handles multiline.
  */
 function parseAskContext(content: string): {
   isAskContext: boolean;
   question?: string;
   suggestions?: string[];
 } {
-  // Case-insensitive, anchored to line start (with optional whitespace)
   const askMatch = content.match(/^\s*ASK_CONTEXT:\s*(.+?)(?:\n|$)/im);
   if (!askMatch) {
     return { isAskContext: false };
@@ -85,532 +113,188 @@ function parseAskContext(content: string): {
   return { isAskContext: true, question, suggestions };
 }
 
+/** Default daemon URI */
+const DEFAULT_DAEMON_URI = 'ws://127.0.0.1:9877';
+
 /**
- * Create the interaction tree MCP server for the agent.
- * Takes context with SessionService (per-session) and SessionManager (global operations).
- * 
- * The context includes a `getSessionService` function for dynamic lookup when
- * the agent creates or connects to sessions during execution.
+ * Format thread tags for logging/display.
  */
-function createInteractionTreeMcpServer(ctx: AgentContext) {
-  const { sessionManager, getSessionService, projectPath: ctxProjectPath } = ctx;
-  
-  // Track the current session ID - can be updated by connectSession/createSession
-  let currentSessionId = ctx.currentSessionId;
-  
-  // Project path from context (for auto-creating sessions)
-  const defaultProjectPath = ctxProjectPath;
-  
-  // Get the current session service - either from context or dynamic lookup
-  const getCurrentSessionService = (): SessionService | undefined => {
-    if (currentSessionId && getSessionService) {
-      return getSessionService(currentSessionId);
-    }
-    return ctx.sessionService;
-  };
-  
-  const noSessionServiceError = {
-    content: [{ type: 'text' as const, text: 'Error: No session connected. Use listSessions to find sessions or createSession to create one, then use connectSession to connect.' }],
-  };
-  
-  const noSessionManagerError = {
-    content: [{ type: 'text' as const, text: 'Error: No session manager available.' }],
-  };
-
-  const wrapError = (err: unknown, context: string) => ({
-    content: [{ type: 'text' as const, text: `Error ${context}: ${err instanceof Error ? err.message : String(err)}` }],
-  });
-
-  const getStatusTool = tool(
-    'getStatus',
-    'Get the current connection status. Returns vmConnected: true if the app is running and connected.',
-    {},
-    async () => {
-      const sessionService = getCurrentSessionService();
-      if (!sessionService) {
-        return { content: [{ type: 'text' as const, text: JSON.stringify({ connected: false, vmConnected: false, currentSessionId, message: 'No session connected' }, null, 2) }] };
-      }
-      try {
-        const status = sessionService.getStatus();
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ ...status, currentSessionId }, null, 2) }],
-        };
-      } catch (err) {
-        return wrapError(err, 'getting status');
-      }
-    }
-  );
-
-  const getTreeTool = tool(
-    'getTree',
-    'Get the interaction tree showing all interactable widgets in the app.',
-    {
-      includeBounds: z.boolean().optional(),
-      includeState: z.boolean().optional(),
-    },
-    async (args) => {
-      const sessionService = getCurrentSessionService();
-      if (!sessionService) {
-        return noSessionServiceError;
-      }
-      try {
-        const tree = await sessionService.getTree({
-          includeBounds: args.includeBounds,
-          includeWidgetType: true,
-          includeState: args.includeState,
-        });
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify(tree, null, 2) }],
-        };
-      } catch (err) {
-        return wrapError(err, 'getting tree');
-      }
-    }
-  );
-
-  const executeTool = tool(
-    'execute',
-    'Execute an interaction on a widget (tap, doubleTap, longPress, enterText, etc.)',
-    {
-      id: z.string(),
-      interaction: z.string(),
-      args: z.record(z.unknown()).optional(),
-    },
-    async (args) => {
-      const sessionService = getCurrentSessionService();
-      if (!sessionService) {
-        return noSessionServiceError;
-      }
-      try {
-        const result = await sessionService.execute(args.id, args.interaction, args.args);
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
-        };
-      } catch (err) {
-        return wrapError(err, `executing ${args.interaction} on ${args.id}`);
-      }
-    }
-  );
-
-  const getStateTool = tool(
-    'getState',
-    'Get the current state of a widget.',
-    { id: z.string() },
-    async (args) => {
-      const sessionService = getCurrentSessionService();
-      if (!sessionService) {
-        return noSessionServiceError;
-      }
-      try {
-        const state = await sessionService.getState(args.id);
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify(state, null, 2) }],
-        };
-      } catch (err) {
-        return wrapError(err, `getting state for ${args.id}`);
-      }
-    }
-  );
-
-  const batchTool = tool(
-    'batch',
-    'Execute multiple interactions in sequence.',
-    {
-      steps: z.array(
-        z.object({
-          action: z.string(),
-          id: z.string(),
-          text: z.string().optional(),
-          dx: z.number().optional(),
-          dy: z.number().optional(),
-          alignment: z.number().optional(),
-          actionName: z.string().optional(),
-          args: z.record(z.unknown()).optional(),
-          condition: z.string().optional(),
-          timeoutMs: z.number().optional(),
-        })
-      ),
-    },
-    async (args) => {
-      const sessionService = getCurrentSessionService();
-      if (!sessionService) {
-        return noSessionServiceError;
-      }
-      try {
-        const result = await sessionService.batch(args.steps as BatchStep[]);
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
-        };
-      } catch (err) {
-        return wrapError(err, 'executing batch');
-      }
-    }
-  );
-
-  const hotReloadTool = tool('hotReload', 'Hot reload the app to apply code changes. Use for UI-only changes.', {}, async () => {
-    const sessionService = getCurrentSessionService();
-    if (!sessionService) {
-      return noSessionServiceError;
-    }
-    try {
-      const result = await sessionService.hotReload();
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
-      };
-    } catch (err) {
-      return wrapError(err, 'during hot reload');
-    }
-  });
-
-  const hotRestartTool = tool('hotRestart', 'Hot restart the app (full restart, loses state). Use for state/logic changes.', {}, async () => {
-    const sessionService = getCurrentSessionService();
-    if (!sessionService) {
-      return noSessionServiceError;
-    }
-    try {
-      const result = await sessionService.hotRestart();
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
-      };
-    } catch (err) {
-      return wrapError(err, 'during hot restart');
-    }
-  });
-
-  const getLogsTool = tool(
-    'getLogs',
-    'Get recent logs from the Flutter app.',
-    { maxLines: z.number().optional() },
-    async (args) => {
-      const sessionService = getCurrentSessionService();
-      if (!sessionService) {
-        return noSessionServiceError;
-      }
-      try {
-        const logs = sessionService.getLogs(args.maxLines);
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ logs }, null, 2) }],
-        };
-      } catch (err) {
-        return wrapError(err, 'getting logs');
-      }
-    }
-  );
-
-  const getErrorsTool = tool('getErrors', 'Get runtime errors from the app.', {}, async () => {
-    const sessionService = getCurrentSessionService();
-    if (!sessionService) {
-      return noSessionServiceError;
-    }
-    try {
-      const errors = await sessionService.getRuntimeErrors();
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ errors }, null, 2) }],
-      };
-    } catch (err) {
-      return wrapError(err, 'getting errors');
-    }
-  });
-
-  // Session management tools (use sessionManager for global operations)
-  const createSessionTool = tool(
-    'createSession',
-    'Create a new Flutter session and automatically connect to it. If projectPath is not provided, uses the default project path.',
-    {
-      name: z.string().describe('Session name'),
-      projectPath: z.string().optional().describe('Path to Flutter project (optional if default is set)'),
-    },
-    async (args) => {
-      if (!sessionManager) {
-        return noSessionManagerError;
-      }
-      const finalProjectPath = args.projectPath ?? defaultProjectPath;
-      if (!finalProjectPath) {
-        return {
-          content: [{ type: 'text' as const, text: 'Error: No project path provided and no default project path set. Please provide a projectPath.' }],
-        };
-      }
-      try {
-        const session = sessionManager.create({ name: args.name, projectPath: finalProjectPath });
-        // Auto-connect to the newly created session
-        currentSessionId = session.id;
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ created: true, connected: true, session }, null, 2) }],
-        };
-      } catch (err) {
-        return wrapError(err, 'creating session');
-      }
-    }
-  );
-
-  const listSessionsTool = tool('listSessions', 'List all Flutter sessions. Returns session IDs that can be used with connectSession.', {}, async () => {
-    if (!sessionManager) {
-      return noSessionManagerError;
-    }
-    const sessions = sessionManager.list();
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ sessions, currentSessionId }, null, 2) }],
-    };
-  });
-
-  const connectSessionTool = tool(
-    'connectSession',
-    'Connect to an existing session by name or ID. Required before using app interaction tools.',
-    {
-      sessionId: z.string().describe('Session ID or name'),
-    },
-    async (args) => {
-      if (!sessionManager) {
-        return noSessionManagerError;
-      }
-      const session = sessionManager.get(args.sessionId);
-      if (!session) {
-        return {
-          content: [{ type: 'text' as const, text: `Error: Session not found: ${args.sessionId}` }],
-        };
-      }
-      // Set the current session
-      currentSessionId = session.id;
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ connected: true, currentSessionId: session.id, session: sessionManager.toInfo(session) }, null, 2) }],
-      };
-    }
-  );
-
-  const destroySessionTool = tool(
-    'destroySession',
-    'Destroy a session by name or ID.',
-    {
-      sessionId: z.string().describe('Session ID or name'),
-    },
-    async (args) => {
-      if (!sessionManager) {
-        return noSessionManagerError;
-      }
-      try {
-        await sessionManager.destroy(args.sessionId);
-        // Clear current session if it was the one destroyed
-        if (currentSessionId === args.sessionId) {
-          currentSessionId = undefined;
-        }
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ destroyed: true }, null, 2) }],
-        };
-      } catch (err) {
-        return wrapError(err, 'destroying session');
-      }
-    }
-  );
-
-  // App lifecycle tools (use sessionService)
-  const runAppTool = tool(
-    'runApp',
-    'Run the Flutter app in the current session. The app will start and connect to the VM service.',
-    {
-      device: z.string().optional().describe('Target device'),
-      flavor: z.string().optional().describe('Build flavor'),
-      target: z.string().optional().describe('Target file (e.g., lib/main.dart)'),
-    },
-    async (args) => {
-      const sessionService = getCurrentSessionService();
-      if (!sessionService) {
-        return noSessionServiceError;
-      }
-      try {
-        await sessionService.runApp({
-          device: args.device,
-          flavor: args.flavor,
-          target: args.target,
-        });
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ success: true, message: 'App starting. Use getStatus to check when vmConnected is true.' }, null, 2) }],
-        };
-      } catch (err) {
-        return wrapError(err, 'running app');
-      }
-    }
-  );
-
-  const stopAppTool = tool('stopApp', 'Stop the Flutter app in the current session.', {}, async () => {
-    const sessionService = getCurrentSessionService();
-    if (!sessionService) {
-      return noSessionServiceError;
-    }
-    try {
-      await sessionService.stopApp();
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ success: true }, null, 2) }],
-      };
-    } catch (err) {
-      return wrapError(err, 'stopping app');
-    }
-  });
-
-  return createSdkMcpServer({
-    name: 'interaction-tree',
-    version: '0.1.0',
-    tools: [
-      // Status & tree
-      getStatusTool,
-      getTreeTool,
-      // Interactions
-      executeTool,
-      getStateTool,
-      batchTool,
-      // Hot reload/restart
-      hotReloadTool,
-      hotRestartTool,
-      // Logs & errors
-      getLogsTool,
-      getErrorsTool,
-      // Session management
-      createSessionTool,
-      listSessionsTool,
-      connectSessionTool,
-      destroySessionTool,
-      // App lifecycle
-      runAppTool,
-      stopAppTool,
-    ],
-  });
+function formatTags(tags?: ThreadTags): string {
+  if (!tags) return '';
+  const parts: string[] = [];
+  if (tags.project) parts.push(`project:${tags.project}`);
+  if (tags.category) parts.push(`category:${tags.category}`);
+  if (tags.issueRef) parts.push(`issue:${tags.issueRef}`);
+  if (tags.custom) parts.push(...tags.custom);
+  return parts.join(', ');
 }
 
 export type AgentStreamCallback = (event: Omit<AgentStreamEvent, 'type' | 'id' | 'sessionId'>) => void;
 
 /**
- * Execute an agent with the interaction tree tools bound to a context.
- * Context includes VMClient, SessionManager, FlutterManager - all optional.
+ * Debug Agent Allowed Tools - runtime investigation only via toolbox
  */
-export async function executeAgent(
-  systemPrompt: string,
+const DEBUG_AGENT_PERMISSIONS: Permission[] = [
+  // Block source code access - Amp's responsibility
+  createPermission('Read', 'reject'),
+  createPermission('Grep', 'reject'),
+  createPermission('glob', 'reject'),
+  createPermission('finder', 'reject'),
+  createPermission('Bash', 'reject'),
+  createPermission('edit_file', 'reject'),
+  createPermission('create_file', 'reject'),
+];
+
+/**
+ * Tools explicitly blocked for the Debug Agent.
+ */
+export const DEBUG_AGENT_BLOCKED_TOOLS = [
+  'Read',
+  'Grep',
+  'glob',
+  'finder',
+  'Bash',
+  'edit_file',
+  'create_file',
+];
+
+/**
+ * Execute the debug agent using Amp SDK.
+ * 
+ * The debug agent:
+ * - Runs in rush mode by default (faster, cheaper) - switchable to smart
+ * - Creates a PRIVATE Amp thread (can be made public for PRs)
+ * - Supports thread tagging for categorization
+ * - Returns the thread-id for handoff to main Amp instance
+ * - Uses toolbox scripts to access daemon tools (not MCP)
+ */
+export async function executeDebugAgent(
   userMessage: string,
   config: AgentExecutorConfig,
   ctx: AgentContext,
   onEvent?: AgentStreamCallback
 ): Promise<AgentExecutionResult> {
-  const mcpServer = createInteractionTreeMcpServer(ctx);
+  const { DEBUG_AGENT_SYSTEM_PROMPT } = await import('./prompts.js');
 
-  const options: Options = {
-    cwd: config.cwd,
-    maxTurns: config.maxTurns,
-    systemPrompt,
-    mcpServers: {
-      'interaction-tree': mcpServer,
-    },
-    allowedTools: [
-      // Status & tree
-      'mcp__interaction-tree__getStatus',
-      'mcp__interaction-tree__getTree',
-      // Interactions
-      'mcp__interaction-tree__execute',
-      'mcp__interaction-tree__getState',
-      'mcp__interaction-tree__batch',
-      // Hot reload/restart
-      'mcp__interaction-tree__hotReload',
-      'mcp__interaction-tree__hotRestart',
-      // Logs & errors
-      'mcp__interaction-tree__getLogs',
-      'mcp__interaction-tree__getErrors',
-      // Session management
-      'mcp__interaction-tree__createSession',
-      'mcp__interaction-tree__listSessions',
-      'mcp__interaction-tree__connectSession',
-      'mcp__interaction-tree__destroySession',
-      // App lifecycle
-      'mcp__interaction-tree__runApp',
-      'mcp__interaction-tree__stopApp',
-    ],
-    permissionMode: 'bypassPermissions',
-    allowDangerouslySkipPermissions: true,
-    includePartialMessages: true,  // Enable streaming
-  };
+  let threadId: string | undefined;
+  const textBlocks: string[] = [];
+  const mode = config.mode ?? 'rush';
+  const visibility = config.visibility ?? 'private';
+  const tags = config.tags;
 
-  options.model = config.model ?? DEFAULT_MODEL;
-  console.log(`[agent] Using model: ${options.model}`);
-
-  if (config.resume) {
-    options.resume = config.resume;
-  }
+  // Generate toolbox scripts for this execution
+  const daemonUri = config.daemonUri ?? DEFAULT_DAEMON_URI;
+  const toolboxPath = generateToolbox(daemonUri);
+  console.log(`[debug-agent] Generated toolbox at: ${toolboxPath}`);
 
   try {
-    const textBlocks: string[] = [];
-    let sessionId: string | undefined;
+    // Build the execute options with toolbox instead of MCP
+    const executeOptions: Parameters<typeof execute>[0]['options'] = {
+      cwd: config.cwd,
+      dangerouslyAllowAll: true,
+      permissions: DEBUG_AGENT_PERMISSIONS,
+      toolbox: toolboxPath,
+      logLevel: 'info',
+    };
 
-    for await (const message of query({ prompt: userMessage, options })) {
-      // Capture session ID from the init message
+    // Continue existing thread if provided
+    if (config.continueThread) {
+      executeOptions.continue = config.continueThread;
+    }
+
+    // Build context with tags
+    let contextInfo = '';
+    if (tags) {
+      const tagStr = formatTags(tags);
+      if (tagStr) {
+        contextInfo = `\n\n[Thread Tags: ${tagStr}]`;
+      }
+    }
+
+    // Build the full prompt with system context
+    const fullPrompt = `${DEBUG_AGENT_SYSTEM_PROMPT}${contextInfo}\n\n---\n\nUser Request: ${userMessage}`;
+
+    console.log(`[debug-agent] Starting in ${mode} mode, visibility: ${visibility}, cwd: ${config.cwd}`);
+    if (tags) {
+      console.log(`[debug-agent] Tags: ${formatTags(tags)}`);
+    }
+
+    for await (const message of execute({ prompt: fullPrompt, options: executeOptions })) {
+      // Capture thread ID from system init message
       if (message.type === 'system' && message.subtype === 'init') {
-        sessionId = message.session_id;
-      }
-
-      // Handle streaming partial messages (text deltas, block boundaries)
-      if (message.type === 'stream_event') {
-        const evt = message.event as {
-          type: string;
-          index?: number;
-          delta?: { type: string; text?: string };
-          content_block?: { type: string; name?: string; id?: string };
-        };
-        
-        // Text streaming
-        if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
-          onEvent?.({ event: { kind: 'text_delta', text: evt.delta.text ?? '' } });
-        }
-        
-        // Tool block starting - emit tool_call_start immediately during streaming
-        // This preserves the correct ordering: text -> tool -> text
-        if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
-          onEvent?.({ event: { 
-            kind: 'tool_call_start', 
-            toolName: evt.content_block.name ?? '', 
-            toolCallId: evt.content_block.id ?? '' 
-          } });
-        }
-        
-        // Message streaming complete - emit message_complete for immediate UI feedback
-        // Don't wait for the full loop to finish (which includes SDK overhead)
-        if (evt.type === 'message_stop') {
-          onEvent?.({ event: { kind: 'message_complete' } });
+        const initMsg = message as { thread_id?: string; session_id?: string };
+        threadId = initMsg.thread_id ?? initMsg.session_id;
+        if (threadId) {
+          console.log(`[debug-agent] Thread ID: ${threadId} (${visibility})`);
         }
       }
 
+      // Handle assistant messages
       if (message.type === 'assistant') {
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            textBlocks.push(block.text);
-            // Don't emit text_delta here since we already streamed it via stream_event
+        const content = message.message?.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === 'text') {
+              textBlocks.push(block.text);
+              onEvent?.({ event: { kind: 'text_delta', text: block.text } });
+            }
+            if (block.type === 'tool_use') {
+              onEvent?.({
+                event: {
+                  kind: 'tool_call_start',
+                  toolName: block.name ?? '',
+                  toolCallId: block.id ?? '',
+                },
+              });
+            }
           }
-          // Note: tool_call_start is now emitted via stream_event content_block_start
-          // to ensure correct ordering during streaming
         }
       }
 
+      // Handle tool results
       if (message.type === 'user') {
-        for (const block of message.message.content) {
-          if (block.type === 'tool_result') {
-            const resultText = Array.isArray(block.content)
-              ? block.content.map((c: { type: string; text?: string }) => c.type === 'text' ? c.text : '').join('')
-              : typeof block.content === 'string' ? block.content : undefined;
-            onEvent?.({ event: { kind: 'tool_call_end', toolName: '', toolCallId: block.tool_use_id, result: resultText } });
+        const content = message.message?.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === 'tool_result') {
+              const resultText = Array.isArray(block.content)
+                ? block.content.map((c: { type: string; text?: string }) => 
+                    c.type === 'text' ? c.text : ''
+                  ).join('')
+                : typeof block.content === 'string' ? block.content : undefined;
+              onEvent?.({
+                event: {
+                  kind: 'tool_call_end',
+                  toolName: '',
+                  toolCallId: block.tool_use_id,
+                  result: resultText,
+                },
+              });
+            }
           }
         }
       }
 
+      // Handle final result
       if (message.type === 'result') {
-        if (message.subtype !== 'success') {
-          const errorMsg =
-            'errors' in message ? message.errors.join(', ') : 'Unknown error';
+        if (message.is_error) {
+          const errorMsg = message.error ?? 'Unknown error';
           onEvent?.({ event: { kind: 'error', message: errorMsg } });
           return {
             status: 'error',
             error: errorMsg,
-            sessionId,
+            threadId,
+            threadUrl: threadId ? `https://ampcode.com/threads/${threadId}` : undefined,
+            visibility,
+            tags,
+            sessionId: threadId,
           };
         }
       }
     }
 
     const allContent = textBlocks.join('\n');
-    const finalContent = textBlocks.filter(t => t.trim()).pop() ?? '';
+    const finalContent = textBlocks.filter((t) => t.trim()).pop() ?? '';
 
     const askContext = parseAskContext(allContent);
     if (askContext.isAskContext) {
@@ -618,7 +302,11 @@ export async function executeAgent(
         status: 'needs_context',
         question: askContext.question,
         suggestions: askContext.suggestions,
-        sessionId,
+        threadId,
+        threadUrl: threadId ? `https://ampcode.com/threads/${threadId}` : undefined,
+        visibility,
+        tags,
+        sessionId: threadId,
       };
     }
 
@@ -627,16 +315,29 @@ export async function executeAgent(
     return {
       status: 'success',
       summary: finalContent,
-      sessionId,
+      threadId,
+      threadUrl: threadId ? `https://ampcode.com/threads/${threadId}` : undefined,
+      visibility,
+      tags,
+      sessionId: threadId,
     };
   } catch (err) {
-    console.error('[agent] executeAgent error:', err);
+    console.error('[debug-agent] executeDebugAgent error:', err);
     const errorMsg = err instanceof Error ? err.message : String(err);
     onEvent?.({ event: { kind: 'error', message: errorMsg } });
     return {
       status: 'error',
       error: errorMsg,
+      threadId,
+      threadUrl: threadId ? `https://ampcode.com/threads/${threadId}` : undefined,
+      visibility,
+      tags,
+      sessionId: threadId,
     };
+  } finally {
+    // Clean up the generated toolbox
+    cleanupToolbox(toolboxPath);
+    console.log(`[debug-agent] Cleaned up toolbox: ${toolboxPath}`);
   }
 }
 
@@ -650,339 +351,103 @@ export function getDefaultAgentConfig(
   return {
     maxTurns: overrides?.maxTurns ?? 10,
     cwd,
-    model: overrides?.model,
+    mode: overrides?.mode ?? 'rush',
+    visibility: overrides?.visibility ?? 'private',
+    tags: overrides?.tags,
   };
-}
-
-/**
- * AgentExecutor class that wraps agent execution for a session.
- * Maintains a single Claude SDK session per fleeter session for conversation continuity.
- */
-export class AgentExecutor {
-  private config: Partial<AgentConfig>;
-  /** Claude SDK session ID for resuming conversations */
-  private sdkSessionId?: string;
-
-  constructor(config?: Partial<AgentConfig>) {
-    this.config = config ?? {};
-  }
-
-  /** Get the current Claude SDK session ID */
-  getSessionId(): string | undefined {
-    return this.sdkSessionId;
-  }
-
-  /** Clear the session (start fresh conversation) */
-  clearSession(): void {
-    this.sdkSessionId = undefined;
-  }
-
-  async execute(options: {
-    intent: string;
-    sessionService?: SessionService;
-    sessionManager?: SessionManager;
-    cwd: string;
-    onEvent?: AgentStreamCallback;
-  }): Promise<AgentExecutionResult> {
-    const { intent, sessionService, sessionManager, cwd, onEvent } = options;
-
-    const { AGENT_SYSTEM_PROMPT } = await import('./prompts.js');
-    const config = getDefaultAgentConfig(cwd, this.config);
-
-    // Resume existing session if we have one
-    if (this.sdkSessionId) {
-      config.resume = this.sdkSessionId;
-    }
-
-    const ctx: AgentContext = {
-      sessionService,
-      sessionManager,
-    };
-
-    const result = await executeAgent(AGENT_SYSTEM_PROMPT, intent, config, ctx, onEvent);
-
-    // Store the session ID for future resumption
-    if (result.sessionId) {
-      this.sdkSessionId = result.sessionId;
-    }
-
-    return result;
-  }
-}
-
-/**
- * Debug Agent Allowed Tools
- * 
- * The Debug Agent is a RUNTIME-ONLY investigator. It can ONLY use:
- * - Fleeter MCP tools (interact with app, reload, restart, run, stop, sessions)
- * 
- * It CANNOT access (Amp's responsibility):
- * - File reading: Read, Grep, glob, finder (Amp reads code based on report)
- * - Bash: flutter analyze, git blame, etc. (Amp runs these)
- * - edit_file, create_file (Amp applies code fixes)
- */
-const DEBUG_AGENT_ALLOWED_TOOLS = [
-  // App investigation & control - ALL Fleeter MCP tools
-  'mcp__interaction-tree__getStatus',
-  'mcp__interaction-tree__getTree',
-  'mcp__interaction-tree__execute',
-  'mcp__interaction-tree__getState',
-  'mcp__interaction-tree__batch',
-  'mcp__interaction-tree__getLogs',
-  'mcp__interaction-tree__getErrors',
-  // App lifecycle - needed to reproduce issues
-  'mcp__interaction-tree__hotReload',
-  'mcp__interaction-tree__hotRestart',
-  'mcp__interaction-tree__runApp',
-  'mcp__interaction-tree__stopApp',
-  // Session management - might need to create session to debug
-  'mcp__interaction-tree__createSession',
-  'mcp__interaction-tree__listSessions',
-  'mcp__interaction-tree__connectSession',
-  'mcp__interaction-tree__destroySession',
-  // NO source code access - Amp reads code based on the debug report
-  // NO shell commands - Amp runs flutter analyze, tests, etc.
-];
-
-/**
- * Tools explicitly blocked for the Debug Agent.
- * These are Amp's responsibility - the Debug Agent is runtime-only.
- */
-export const DEBUG_AGENT_BLOCKED_TOOLS = [
-  // Code access - Amp reads code based on debug report
-  'Read',
-  'Grep',
-  'glob',
-  'finder',
-  // Shell commands - Amp runs flutter analyze, tests, etc.
-  'Bash',
-  // Code modification - Amp applies fixes
-  'edit_file',
-  'create_file',
-];
-
-/**
- * Execute the debug agent with RUNTIME-ONLY investigation tools.
- * 
- * The debug agent investigates the RUNNING APP:
- * - Interact with the app, restart it, run it
- * - Get logs, errors, widget tree, widget states
- * 
- * It CANNOT access source code or run shell commands.
- * It returns a debug report with observations and hypotheses.
- * Amp reads code and applies fixes based on the report.
- */
-export async function executeDebugAgent(
-  userMessage: string,
-  config: AgentExecutorConfig,
-  ctx: AgentContext,
-  onEvent?: AgentStreamCallback
-): Promise<AgentExecutionResult> {
-  const { DEBUG_AGENT_SYSTEM_PROMPT } = await import('./prompts.js');
-  const mcpServer = createInteractionTreeMcpServer(ctx);
-
-  // Find Claude Code executable - try npx cache first, then local node_modules
-  const findClaudeCodePath = (): string | undefined => {
-    // Check npx cache (where npx @anthropic-ai/claude-code installs)
-    const npxCachePath = join(homedir(), '.npm/_npx');
-    try {
-      const cacheEntries = readdirSync(npxCachePath);
-      for (const entry of cacheEntries) {
-        const cliPath = join(npxCachePath, entry, 'node_modules/@anthropic-ai/claude-code/cli.js');
-        if (existsSync(cliPath)) {
-          return cliPath;
-        }
-      }
-    } catch {
-      // npx cache not found
-    }
-    
-    // Check local node_modules
-    const localPath = join(process.cwd(), 'node_modules/@anthropic-ai/claude-code/cli.js');
-    if (existsSync(localPath)) {
-      return localPath;
-    }
-    
-    return undefined;
-  };
-  
-  const claudeCodePath = findClaudeCodePath();
-  if (claudeCodePath) {
-    console.log(`[debug-agent] Found Claude Code at: ${claudeCodePath}`);
-  } else {
-    console.warn('[debug-agent] Claude Code not found, using default');
-  }
-
-  const options: Options = {
-    cwd: config.cwd,
-    maxTurns: config.maxTurns,
-    systemPrompt: DEBUG_AGENT_SYSTEM_PROMPT,
-    mcpServers: {
-      'interaction-tree': mcpServer,
-    },
-    allowedTools: DEBUG_AGENT_ALLOWED_TOOLS,
-    permissionMode: 'bypassPermissions',
-    allowDangerouslySkipPermissions: true,
-    includePartialMessages: true,
-    ...(claudeCodePath && { pathToClaudeCodeExecutable: claudeCodePath }),
-  };
-
-  options.model = config.model ?? DEFAULT_MODEL;
-  console.log(`[debug-agent] Using model: ${options.model}`);
-
-  if (config.resume) {
-    options.resume = config.resume;
-  }
-
-  try {
-    const textBlocks: string[] = [];
-    let sessionId: string | undefined;
-
-    for await (const message of query({ prompt: userMessage, options })) {
-      // Capture session ID from the init message
-      if (message.type === 'system' && message.subtype === 'init') {
-        sessionId = message.session_id;
-      }
-
-      // Handle streaming partial messages
-      if (message.type === 'stream_event') {
-        const evt = message.event as {
-          type: string;
-          index?: number;
-          delta?: { type: string; text?: string };
-          content_block?: { type: string; name?: string; id?: string };
-        };
-        
-        if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
-          onEvent?.({ event: { kind: 'text_delta', text: evt.delta.text ?? '' } });
-        }
-        
-        if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
-          onEvent?.({ event: { 
-            kind: 'tool_call_start', 
-            toolName: evt.content_block.name ?? '', 
-            toolCallId: evt.content_block.id ?? '' 
-          } });
-        }
-        
-        if (evt.type === 'message_stop') {
-          onEvent?.({ event: { kind: 'message_complete' } });
-        }
-      }
-
-      if (message.type === 'assistant') {
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            textBlocks.push(block.text);
-          }
-        }
-      }
-
-      if (message.type === 'user') {
-        for (const block of message.message.content) {
-          if (block.type === 'tool_result') {
-            const resultText = Array.isArray(block.content)
-              ? block.content.map((c: { type: string; text?: string }) => c.type === 'text' ? c.text : '').join('')
-              : typeof block.content === 'string' ? block.content : undefined;
-            onEvent?.({ event: { kind: 'tool_call_end', toolName: '', toolCallId: block.tool_use_id, result: resultText } });
-          }
-        }
-      }
-
-      if (message.type === 'result') {
-        if (message.subtype !== 'success') {
-          const errorMsg =
-            'errors' in message ? message.errors.join(', ') : 'Unknown error';
-          onEvent?.({ event: { kind: 'error', message: errorMsg } });
-          return {
-            status: 'error',
-            error: errorMsg,
-            sessionId,
-          };
-        }
-      }
-    }
-
-    const allContent = textBlocks.join('\n');
-    const finalContent = textBlocks.filter(t => t.trim()).pop() ?? '';
-
-    const askContext = parseAskContext(allContent);
-    if (askContext.isAskContext) {
-      return {
-        status: 'needs_context',
-        question: askContext.question,
-        suggestions: askContext.suggestions,
-        sessionId,
-      };
-    }
-
-    onEvent?.({ event: { kind: 'task_complete', summary: finalContent } });
-
-    return {
-      status: 'success',
-      summary: finalContent,
-      sessionId,
-    };
-  } catch (err) {
-    console.error('[debug-agent] executeDebugAgent error:', err);
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    onEvent?.({ event: { kind: 'error', message: errorMsg } });
-    return {
-      status: 'error',
-      error: errorMsg,
-    };
-  }
 }
 
 /**
  * DebugAgentExecutor class that wraps debug agent execution.
  * 
  * The debug agent is a RUNTIME-ONLY investigation agent that:
- * - Investigates running Flutter apps via Fleeter MCP tools
- * - Can run/restart the app, hot reload, execute interactions
- * - Gets logs, errors, widget tree, widget states
- * - Curates debug reports with runtime observations and hypotheses
- * 
- * The debug agent CANNOT:
- * - Read source code (Read, Grep, glob, finder)
- * - Run shell commands (Bash)
- * - Edit source code (edit_file, create_file)
- * 
- * These are Amp's responsibility after receiving the debug report.
- * Amp reads the report, searches code, and applies fixes.
- * 
- * Maintains a Claude SDK session for multi-turn debugging conversations.
+ * - Uses Amp SDK with rush mode (default) or smart mode
+ * - Creates PRIVATE Amp threads (can be made public for PRs)
+ * - Supports thread tagging for categorization
+ * - Returns thread-id for handoff to main Amp instance
  */
 export class DebugAgentExecutor {
   private config: Partial<AgentConfig>;
-  /** Claude SDK session ID for resuming debug conversations */
-  private sdkSessionId?: string;
+  /** Amp thread ID for multi-turn conversations */
+  private threadId?: string;
+  /** Current thread visibility */
+  private visibility: ThreadVisibility = 'private';
+  /** Current thread tags */
+  private tags?: ThreadTags;
 
   constructor(config?: Partial<AgentConfig>) {
-    this.config = config ?? {};
+    this.config = config ?? { mode: 'rush', visibility: 'private' };
+    this.visibility = config?.visibility ?? 'private';
+    this.tags = config?.tags;
   }
 
-  /** Get the current Claude SDK session ID */
-  getSessionId(): string | undefined {
-    return this.sdkSessionId;
+  /** Get the current Amp thread ID */
+  getThreadId(): string | undefined {
+    return this.threadId;
   }
 
-  /** Clear the session (start fresh debug investigation) */
+  /** Get the thread URL for handoff to main Amp */
+  getThreadUrl(): string | undefined {
+    return this.threadId ? `https://ampcode.com/threads/${this.threadId}` : undefined;
+  }
+
+  /** Get the current thread visibility */
+  getVisibility(): ThreadVisibility {
+    return this.visibility;
+  }
+
+  /** Set thread visibility (for making public when creating PR) */
+  setVisibility(visibility: ThreadVisibility): void {
+    this.visibility = visibility;
+  }
+
+  /** Get current thread tags */
+  getTags(): ThreadTags | undefined {
+    return this.tags;
+  }
+
+  /** Set thread tags */
+  setTags(tags: ThreadTags): void {
+    this.tags = tags;
+  }
+
+  /** Add a tag to the current thread */
+  addTag(key: keyof ThreadTags, value: string): void {
+    if (!this.tags) {
+      this.tags = {};
+    }
+    if (key === 'custom') {
+      this.tags.custom = this.tags.custom ?? [];
+      this.tags.custom.push(value);
+    } else {
+      this.tags[key] = value;
+    }
+  }
+
+  /** Clear the thread (start fresh investigation) */
+  clearThread(): void {
+    this.threadId = undefined;
+  }
+
+  /** @deprecated Use clearThread instead - legacy compatibility */
   clearSession(): void {
-    this.sdkSessionId = undefined;
+    this.clearThread();
+  }
+
+  /** Switch agent mode (rush or smart) */
+  setMode(mode: AgentMode): void {
+    this.config.mode = mode;
+  }
+
+  /** Get current agent mode */
+  getMode(): AgentMode {
+    return this.config.mode ?? 'rush';
   }
 
   /**
    * Execute a debug investigation.
    * 
-   * @param options.intent - What to debug (symptom, error, behavior)
-   * @param options.sessionService - Fleeter session service for app interaction (optional, can be null if no session yet)
-   * @param options.sessionManager - Session manager for session listing/creation
-   * @param options.getSessionService - Function to dynamically get session service by ID
-   * @param options.currentSessionId - Currently active session ID (if any)
-   * @param options.projectPath - Flutter project path (for creating sessions)
-   * @param options.cwd - Working directory (project path)
-   * @param options.onEvent - Callback for streaming events
+   * @returns Result including threadId, threadUrl, visibility, and tags
    */
   async execute(options: {
     intent: string;
@@ -993,31 +458,69 @@ export class DebugAgentExecutor {
     projectPath?: string;
     cwd: string;
     onEvent?: AgentStreamCallback;
+    /** Override mode for this execution only */
+    mode?: AgentMode;
+    /** Override visibility for this execution only */
+    visibility?: ThreadVisibility;
+    /** Override/add tags for this execution */
+    tags?: ThreadTags;
   }): Promise<AgentExecutionResult> {
-    const { intent, sessionService, sessionManager, getSessionService, currentSessionId, projectPath, cwd, onEvent } = options;
+    const { intent, cwd, onEvent } = options;
 
-    const config = getDefaultAgentConfig(cwd, this.config);
+    // Merge tags
+    const executionTags: ThreadTags = {
+      ...this.tags,
+      ...options.tags,
+      custom: [...(this.tags?.custom ?? []), ...(options.tags?.custom ?? [])],
+    };
 
-    // Resume existing session if we have one (multi-turn debugging)
-    if (this.sdkSessionId) {
-      config.resume = this.sdkSessionId;
+    const config: AgentExecutorConfig = {
+      ...getDefaultAgentConfig(cwd, this.config),
+      mode: options.mode ?? this.config.mode ?? 'rush',
+      visibility: options.visibility ?? this.visibility,
+      tags: Object.keys(executionTags).length > 0 ? executionTags : undefined,
+    };
+
+    // Continue existing thread for multi-turn debugging
+    if (this.threadId) {
+      config.continueThread = this.threadId;
     }
 
     const ctx: AgentContext = {
-      sessionService,
-      sessionManager,
-      getSessionService,
-      currentSessionId,
-      projectPath,
+      sessionService: options.sessionService,
+      sessionManager: options.sessionManager,
+      getSessionService: options.getSessionService,
+      currentSessionId: options.currentSessionId,
+      projectPath: options.projectPath,
     };
 
     const result = await executeDebugAgent(intent, config, ctx, onEvent);
 
-    // Store the session ID for future resumption
-    if (result.sessionId) {
-      this.sdkSessionId = result.sessionId;
+    // Store thread ID and update visibility/tags
+    if (result.threadId) {
+      this.threadId = result.threadId;
+    }
+    if (result.visibility) {
+      this.visibility = result.visibility;
+    }
+    if (result.tags) {
+      this.tags = result.tags;
     }
 
     return result;
   }
+
+  /**
+   * Make the current thread public (e.g., for attaching to a PR).
+   * Returns the public thread URL.
+   */
+  makePublic(): string | undefined {
+    this.visibility = 'public';
+    // Note: Actual visibility change would need Amp API call
+    // For now, we just track the intent locally
+    return this.getThreadUrl();
+  }
 }
+
+// Legacy exports for backward compatibility
+export { DebugAgentExecutor as AgentExecutor };

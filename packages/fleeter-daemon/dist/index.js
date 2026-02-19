@@ -1,5 +1,5 @@
 export * from './daemon.js';
 export * from './session/index.js';
 export * from './ws/index.js';
-export { log, logger, createLogger } from './logger.js';
+export { log, createLogger, setVerbose, isVerbose } from './logger.js';
 //# sourceMappingURL=index.js.map

@@ -50,15 +50,17 @@ See [DAEMON_DESIGN.md](./DAEMON_DESIGN.md) for full architecture documentation.
 ## Commands
 
 ```bash
-# Build & install (ALWAYS restart daemon after building daemon changes)
+# Build & install
 bun install
 bun run build
-bun run daemon:restart      # Required after daemon code changes
 
-# Daemon (launchd service)
+# Run daemon directly (preferred for development)
+node packages/fleeter-daemon/dist/bin/daemon.js          # Minimal logs (info/warn/error)
+node packages/fleeter-daemon/dist/bin/daemon.js -v       # Verbose logs (debug)
+
+# Daemon as launchd service (optional)
 bun run daemon:install      # Install & start
 bun run daemon:uninstall    # Stop & remove
-bun run daemon:restart      # Reinstall (use after code changes)
 bun run daemon:status       # Check status
 
 # Logs (~/.fleeter/logs/)

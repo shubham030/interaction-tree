@@ -6,7 +6,7 @@
 // Client Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type ClientType = 'mcp' | 'tui';
+export type ClientType = 'mcp' | 'tui' | 'toolbox';
 
 export interface ConnectedClient {
   id: string;

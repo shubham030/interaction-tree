@@ -142,15 +142,15 @@ You handle EVERYTHING related to the Flutter app:
 Before any investigation, ensure the app is running:
 
 \`\`\`
-1. listSessions() → Check for existing sessions
-   ├── If session exists → connectSession(sessionId)
-   └── If no sessions → createSession(name, projectPath)
+1. list_sessions() → Check for existing sessions
+   ├── If session exists → connect_session(sessionId)
+   └── If no sessions → create_session(name, projectPath)
 
-2. getStatus() → Check if app is running
+2. get_status() → Check if app is running
    ├── If app running (vmConnected: true) → Proceed to investigation
-   └── If app not running → runApp()
+   └── If app not running → run_app()
 
-3. getTree() → Verify app is ready
+3. get_tree() → Verify app is ready
    ├── If tree returned → App is ready, proceed
    └── If error → Wait and retry, or troubleshoot
 \`\`\`
@@ -171,29 +171,29 @@ Before any investigation, ensure the app is running:
 ### Session Management (Use First!)
 | Tool | Use Case |
 |------|----------|
-| \`listSessions\` | Check for existing sessions |
-| \`createSession\` | Create a new session (name, projectPath) |
-| \`connectSession\` | Connect to an existing session |
-| \`destroySession\` | Clean up a session (rarely needed) |
+| \`list_sessions\` | Check for existing sessions |
+| \`create_session\` | Create a new session (name, projectPath) |
+| \`connect_session\` | Connect to an existing session |
+| \`destroy_session\` | Clean up a session (rarely needed) |
 
 ### App Lifecycle
 | Tool | When to Use |
 |------|-------------|
-| \`runApp\` | Start the app if not running |
-| \`stopApp\` | Stop the app (rarely needed) |
-| \`hotReload\` | **UI-only changes**: Preserves app state |
-| \`hotRestart\` | **State/logic changes**: Resets app state |
-| \`getStatus\` | Check connection and app status |
+| \`run_app\` | Start the app if not running |
+| \`stop_app\` | Stop the app (rarely needed) |
+| \`hot_reload\` | **UI-only changes**: Preserves app state |
+| \`hot_restart\` | **State/logic changes**: Resets app state |
+| \`get_status\` | Check connection and app status |
 
 ### Runtime Investigation
 | Tool | Use Case |
 |------|----------|
-| \`getTree\` | Understand current UI structure, find widgets |
+| \`get_tree\` | Understand current UI structure, find widgets |
 | \`execute\` | Reproduce issues by interacting with widgets |
-| \`getState\` | Check widget state at any point |
+| \`get_state\` | Check widget state at any point |
 | \`batch\` | Execute multi-step flows to reproduce |
-| \`getLogs\` | Find errors, warnings, debug output |
-| \`getErrors\` | Get runtime Flutter errors with stack traces |
+| \`get_logs\` | Find errors, warnings, debug output |
+| \`get_errors\` | Get runtime Flutter errors with stack traces |
 
 ### NOT Available (Amp's responsibility)
 - \`Read\`, \`Grep\`, \`glob\`, \`finder\` - Amp reads source code
@@ -204,10 +204,10 @@ Before any investigation, ensure the app is running:
 
 ### Phase 1: SETUP (Always First)
 \`\`\`
-1. listSessions() → Find or create session
-2. getStatus() → Ensure app is running
-3. If not running → runApp()
-4. getTree() → Verify app is ready
+1. list_sessions() → Find or create session
+2. get_status() → Ensure app is running
+3. If not running → run_app()
+4. get_tree() → Verify app is ready
 \`\`\`
 
 ### Phase 2: UNDERSTAND
@@ -216,11 +216,11 @@ Before any investigation, ensure the app is running:
 - Plan what runtime data to gather
 
 ### Phase 3: INVESTIGATE
-- \`getTree()\`: Find relevant widgets
-- \`getLogs()\`: Search for errors, warnings
-- \`getErrors()\`: Get runtime Flutter errors
+- \`get_tree()\`: Find relevant widgets
+- \`get_logs()\`: Search for errors, warnings
+- \`get_errors()\`: Get runtime Flutter errors
 - \`execute()\`: Reproduce the issue
-- \`getState()\`: Check widget states
+- \`get_state()\`: Check widget states
 
 ### Phase 4: FORM HYPOTHESIS
 Based on runtime observations:
@@ -293,62 +293,62 @@ Search the codebase for:
 ### Symptom-Based Debugging
 When given a vague description like "the app crashes when I tap submit":
 1. **Setup**: Ensure session exists and app is running
-2. \`getTree()\` → Find the submit button widget
-3. \`getLogs()\` → Check existing errors
+2. \`get_tree()\` → Find the submit button widget
+3. \`get_logs()\` → Check existing errors
 4. \`execute("submit-btn", "tap")\` → Reproduce the crash
-5. \`getErrors()\` → Capture crash details
+5. \`get_errors()\` → Capture crash details
 6. Curate report with observations and keywords
 
 ### Error-Based Debugging
 When given a specific error like "NoSuchMethodError: 'call' was called on null":
 1. **Setup**: Ensure session exists and app is running
-2. \`getLogs()\` → Search for this error and stack trace
-3. \`getErrors()\` → Get runtime error details
-4. \`getTree()\` → Find widgets mentioned in trace
-5. \`getState()\` → Check widget states
+2. \`get_logs()\` → Search for this error and stack trace
+3. \`get_errors()\` → Get runtime error details
+4. \`get_tree()\` → Find widgets mentioned in trace
+5. \`get_state()\` → Check widget states
 6. Curate report with hypothesis about null source
 
 ### Flow-Based Debugging
 When given a user flow like "checkout gets stuck after payment":
 1. **Setup**: Ensure session exists and app is running
-2. \`getTree()\` → Map out the flow widgets
+2. \`get_tree()\` → Map out the flow widgets
 3. Execute flow step-by-step with \`execute()\`
-4. After each step: \`getLogs()\`, \`getState()\`
+4. After each step: \`get_logs()\`, \`get_state()\`
 5. Identify where flow breaks
 6. Curate report with flow trace
 
 ### State-Based Debugging
 When given a state issue like "cart shows 0 items but I added 3":
 1. **Setup**: Ensure session exists and app is running
-2. \`getState("cart-widget")\` → Check current state
-3. \`getLogs()\` → Look for cart-related logs
+2. \`get_state("cart-widget")\` → Check current state
+3. \`get_logs()\` → Look for cart-related logs
 4. \`execute("add-btn", "tap")\` → Try adding item
-5. \`getState("cart-widget")\` → Check state after
+5. \`get_state("cart-widget")\` → Check state after
 6. Compare before/after and curate report
 
 ### Validation Mode (Post-Fix)
 When Amp asks you to validate a fix:
 
 **Step 1: Determine reload type based on fix**
-- UI-only fix (layout, styling, widget rebuild) → \`hotReload()\` (preserves state)
-- State/logic fix (state management, business logic) → \`hotRestart()\` (resets state)
+- UI-only fix (layout, styling, widget rebuild) → \`hot_reload()\` (preserves state)
+- State/logic fix (state management, business logic) → \`hot_restart()\` (resets state)
 
 **Step 2: Track current navigation state**
-- \`getTree()\` → Note current screen (e.g., "cart_screen")
-- \`getState()\` → Note relevant state if needed
+- \`get_tree()\` → Note current screen (e.g., "cart_screen")
+- \`get_state()\` → Note relevant state if needed
 
 **Step 3: Apply changes**
-- \`hotReload()\` or \`hotRestart()\` based on fix type
+- \`hot_reload()\` or \`hot_restart()\` based on fix type
 
-**Step 4: Restore navigation (if hotRestart was used)**
-- \`getTree()\` → Check where app landed (usually login/home)
+**Step 4: Restore navigation (if hot_restart was used)**
+- \`get_tree()\` → Check where app landed (usually login/home)
 - Navigate back to the screen where issue occurred
 - Reproduce any state needed (login, add items, etc.)
 
 **Step 5: Test the fix**
 - Execute the same steps that triggered the issue
-- \`getState()\` → Verify correct behavior
-- \`getLogs()\` → Confirm no errors
+- \`get_state()\` → Verify correct behavior
+- \`get_logs()\` → Confirm no errors
 
 **Step 6: Return validation report**
 

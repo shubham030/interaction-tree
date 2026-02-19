@@ -1,9 +1,9 @@
 /**
  * Structured logging for Fleeter daemon.
- * Logs to ~/.fleeter/logs/ with rotation.
+ * By default, logs only info/warn/error. Use --verbose for debug logs.
  */
 
-import pino, { multistream, type StreamEntry } from 'pino';
+import pino, { type Logger as PinoLogger } from 'pino';
 import pinoPretty from 'pino-pretty';
 import fs from 'fs';
 import path from 'path';
@@ -12,73 +12,73 @@ import os from 'os';
 const FLEETER_DIR = path.join(os.homedir(), '.fleeter');
 const LOGS_DIR = path.join(FLEETER_DIR, 'logs');
 
-// Ensure log directory exists
+let verbose = false;
+let _logger: PinoLogger | null = null;
+
+export function setVerbose(v: boolean): void {
+  verbose = v;
+}
+
+export function isVerbose(): boolean {
+  return verbose;
+}
+
 function ensureLogDir(): void {
   if (!fs.existsSync(LOGS_DIR)) {
     fs.mkdirSync(LOGS_DIR, { recursive: true });
   }
 }
 
-// Get log file path with date suffix for rotation
 function getLogFilePath(): string {
-  const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  const date = new Date().toISOString().split('T')[0];
   return path.join(LOGS_DIR, `daemon-${date}.log`);
 }
 
-// Create multi-destination stream (file + stderr) using synchronous destinations
-function createStreams(): StreamEntry[] {
+function getLogger(): PinoLogger {
+  if (_logger) return _logger;
+
   ensureLogDir();
 
-  const streams: StreamEntry[] = [
-    // File output (JSON for parsing) - synchronous write
+  const consoleLevel = verbose ? 'debug' : 'info';
+
+  _logger = pino(
     {
+      name: 'fleeter',
       level: 'trace',
-      stream: pino.destination({
-        dest: getLogFilePath(),
-        sync: true, // Ensure immediate writes
-      }),
+      base: undefined,
     },
-  ];
+    pino.multistream([
+      {
+        level: 'trace',
+        stream: pino.destination({
+          dest: getLogFilePath(),
+          sync: true,
+        }),
+      },
+      {
+        level: consoleLevel,
+        stream: pinoPretty({
+          destination: 2,
+          colorize: true,
+          translateTime: 'HH:MM:ss',
+          ignore: 'pid,hostname',
+        }),
+      },
+    ])
+  );
 
-  // Add pretty console output if not in production
-  if (process.env.NODE_ENV !== 'production') {
-    streams.push({
-      level: 'debug',
-      stream: pinoPretty({
-        destination: 2, // stderr
-        colorize: true,
-        translateTime: 'HH:MM:ss.l',
-        ignore: 'pid,hostname',
-      }),
-    });
-  } else {
-    // Plain JSON to stderr in production
-    streams.push({
-      level: 'info',
-      stream: pino.destination({ dest: 2, sync: true }),
-    });
-  }
-
-  return streams;
+  return _logger;
 }
 
-// Create the logger instance with multistream for multiple destinations
-export const logger = pino(
-  {
-    name: 'fleeter-daemon',
-    level: process.env.LOG_LEVEL || 'debug',
-    // Add useful base context
-    base: {
-      pid: process.pid,
+export const createLogger = (module: string) => {
+  return new Proxy({} as PinoLogger, {
+    get(_, prop) {
+      const logger = getLogger().child({ module });
+      return (logger as unknown as Record<string, unknown>)[prop as string];
     },
-  },
-  multistream(createStreams())
-);
+  });
+};
 
-// Create child loggers for specific modules
-export const createLogger = (module: string) => logger.child({ module });
-
-// Pre-created loggers for common modules
 export const log = {
   daemon: createLogger('daemon'),
   vm: createLogger('vm'),
@@ -89,5 +89,4 @@ export const log = {
   agent: createLogger('agent'),
 };
 
-// Export types
-export type Logger = pino.Logger;
+export type Logger = PinoLogger;
